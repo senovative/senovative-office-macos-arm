@@ -944,3 +944,16 @@ Memperbaiki *regresi* visual (*bugfix*) terkait palet warna pada dokumen yang be
 - **Re-Packaging**:
   - Melakukan kompilasi ulang Ad-Hoc dan memperbarui *installer* `SenovativeWrite.dmg`.
 
+### Catatan Teknis Untuk Agen Berikutnya (Bug Paginasi)
+
+- **Apa yang telah dicoba**: 
+  1. Menghilangkan `textContainerInset` pada `NSTextView` dan memposisikan titik awal kanvas teks secara presisi di koordinat `y = verticalPadding + margins.top`.
+  2. Menerapkan array `exclusionPaths` untuk menolak teks pada setiap area peralihan halaman, dengan ukuran tinggi celah `margins.bottom + pageGap + margins.top`.
+  3. Margin XML sudah ter-parse dengan benar (contoh `w:top="1440"` / 72 points).
+
+- **Mengapa masih gagal (Belum Works)**: 
+  Sistem *continuous flow* yang mengandalkan single `NSTextView` raksasa dengan banyak `exclusionPaths` ternyata masih gagal dirender dengan sempurna di TextKit 2 (API terbaru macOS). Meskipun hitungan matematika koordinat `gapRect`-nya sudah tepat secara logis, `NSLayoutManager` / `NSTextLayoutManager` pada saat *runtime* (terutama saat dimuat ulang/refresh dokumen) tampak mengabaikan sebagian jalur eksklusi tersebut, membuat rentang paragraf tetap menabrak ujung bawah *layer* kertas putih, menutupi celah spasi *gap*, dan mengabaikan margin bawah/atas kertas fisik selanjutnya. 
+
+- **Saran Solusi Berikutnya**: 
+  Jangan mengandalkan *single* `NSTextView` yang panjangnya infinit/tak terhingga dengan trik jalur eksklusi (`exclusionPaths`).
+  **Gunakan arsitektur multi-container**: Satu `NSTextStorage` / `NSTextLayoutManager`, tetapi dipetakan ke *beberapa* objek `NSTextContainer` berbeda yang masing-masing secara spesifik merepresentasikan *satu lembar* kertas fisik. Setiap lembar kertas memiliki tinggi mutlak `pageSize.height - margins.top - margins.bottom`. Ketika teks di `NSTextContainer` pertama meluap, layout manager otomatis akan melanjutkannya ke `NSTextContainer` milik halaman kedua secara absolut, mematikan 100% bug teks menabrak batas margin!
