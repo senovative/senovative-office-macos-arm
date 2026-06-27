@@ -142,10 +142,52 @@ report.docx                     (ZIP)
 | **1.i** | **Tulis `.doc`** | Serializer CFB (tulis compound file) + writer **MS-DOC** biner (FIB, stream `WordDocument`/`1Table`, format) dari model | Simpan ke `.doc` yang terbuka benar di MS Word |
 | **1.j** | Produktivitas & Export | Export **PDF** (PDFKit), Find & Replace, spell check (NSSpellChecker), word/char count, styles gallery, template, autosave/Versions, recent files, print dialog | Fitur sehari-hari setara Word dasar |
 | **1.k** | **Packaging & Rilis** | Ikon final, `build.sh` release arm64, **`SenovativeWrite.dmg`** (background + symlink /Applications), unsigned dulu (signing/notarisasi menyusul saat akun Apple Developer siap) | `.dmg` terpasang & jalan di Mac M-series lain |
+| **1.l** | **Page Setup** | Dialog Page Setup (ukuran kertas, orientasi, margin, scaling) yang mengedit `WriteDocumentSection`, re-layout kanvas live, dan round-trip ke `<w:sectPr>` | Ubah kertas/orientasi/margin via dialog → kanvas & cetak ikut berubah, tersimpan benar di `.docx` & terbuka sesuai di Word |
 
 **Milestone Fase 1:** `SenovativeWrite.dmg` rilis-able yang baca/tulis **`.docx` & `.doc`** asli.
 
 > Pola tiap sub-fase 1.c–1.f: setiap fitur editor **sekaligus** menambah dukungan baca/tulisnya di engine OOXML — model, view (TextKit 2), dan serialisasi `.docx` tumbuh bersamaan.
+
+---
+
+#### 🟦 Fase 1.l — Page Setup (detail)
+
+> Fitur tambahan pasca-1.k. Tujuan: pengguna bisa mengatur properti halaman (ukuran kertas, orientasi, margin, scaling) layaknya **File → Page Setup** di MS Word / dialog Page Setup macOS. Fondasinya sudah ada: `WriteDocumentSection` (di `SenovativeKit`) menyimpan `pageSize` & `margins`, parser/writer OOXML sudah baca/tulis `<w:pgSz>` & `<w:pgMar>`, dan pipeline print/PDF sudah memakai view halaman. Fase ini menyatukannya lewat satu dialog + re-layout live.
+
+**Lingkup UI (mengacu screenshot Page Setup macOS / Word):**
+
+| Kontrol | Nilai | Catatan |
+|---|---|---|
+| **Paper Size** | US Letter (8.5×11"), A4, Legal, Tabloid, + **Custom** (width/height) | Preset umum dulu; custom menyusul. Tampilkan ukuran mm/inci sesuai `Locale`. |
+| **Orientation** | Portrait / Landscape | Tukar width↔height; tulis `w:orient` di `<w:pgSz>`. |
+| **Margins** | Top / Bottom / Left / Right | Gaya Word; default 1" (1440 twips). Validasi margin tak melebihi kertas. |
+| **Scaling** | persen (mis. 100%) | Untuk cetak; map ke `NSPrintInfo.scalingFactor`. |
+| **Apply settings to** (accessory) | Whole Document / This Section | Scope perubahan. Awal: Whole Document (satu section). |
+| **Default…** (accessory) | tombol | Simpan setelan sebagai default dokumen baru. |
+| **(Lanjutan)** | header/footer distance, vertical alignment | Opsional, menyusul. |
+
+**Pendekatan implementasi:**
+
+1. **Akses**: menu **File → Page Setup…** (`Cmd+Shift+P`); opsional tombol ribbon / double-click ruler.
+2. **Dialog**: pakai **`NSPageLayout`** bawaan macOS + **accessory view** — **persis pendekatan MS Word** (screenshot Page Setup Word menampilkan panel native macOS dengan seksi tambahan "Microsoft Word"). Native panel sudah menyediakan **Format For** (printer), **Paper Size**, **Orientation**, **Scaling**, dan thumbnail preview; kita tinggal menambahkan accessory view berisi:
+   - **"Apply Page Setup settings to:"** — dropdown scope (**Whole Document** / This Section). Untuk lingkup awal cukup *Whole Document* (satu `<w:sectPr>`); *This Section* menyusul saat multi-section didukung.
+   - **Tombol "Margins…"** — membuka sheet/dialog terpisah untuk Top/Bottom/Left/Right (gaya Word; macOS sendiri tak punya UI margin di panel ini).
+   - **Tombol "Default…"** — simpan setelan halaman sebagai default dokumen baru.
+   Accessory dipasang via `NSPageLayout.accessoryControllers` (atau `runModal(with: printInfo)` + accessory `NSViewController`). Alternatif (b) **dialog custom SwiftUI** disimpan sebagai cadangan jika butuh kontrol di luar yang diberikan panel native.
+3. **Model**: dialog membaca/menulis `WriteDocumentSection.pageSize` & `.margins` lewat `WriteDocumentState`; `updateChangeCount(.changeDone)` agar tersimpan.
+4. **Re-layout live**: saat section berubah, `DocumentCanvas` harus menghitung ulang lebar halaman tetap, `textContainer` size, `exclusionPaths` (gap antar lembar), dan `PageContainerView` (ukuran/posisi kertas). Saat ini parameter tsb dibaca sekali di `makeNSView` — perlu jalur update agar bisa berubah tanpa buka-ulang dokumen.
+5. **OOXML round-trip**: pastikan writer menulis `<w:pgSz w:w w:h w:orient>` & `<w:pgMar>` dari nilai dialog; tambah atribut `w:orient="landscape"` (saat ini belum ditulis). Parser sudah baca pgSz/pgMar; tambah baca `w:orient`.
+6. **Sinkron print/PDF**: `NSPrintInfo` (paper size, orientation, scaling, margins) diselaraskan dengan section saat `printDocument(_:)` / Export PDF, agar hasil cetak konsisten dengan tampilan.
+
+**Definition of Done:**
+- Dialog Page Setup bisa dibuka; ubah **paper size**, **orientation**, dan **margin** → kanvas editor langsung memantulkan perubahan (lebar/tinggi halaman & margin).
+- Nilai tersimpan ke `.docx` (`<w:sectPr>`) dan **terbuka sesuai di MS Word** (mis. dokumen di-set Landscape A4 margin 2cm tetap demikian saat dibuka Word).
+- Cetak/Export PDF mengikuti pengaturan halaman.
+
+**Catatan teknis & risiko:**
+- Re-layout pagination saat ukuran berubah memakai jalur `exclusionPaths` TextKit 1 yang sama dengan pagination saat ini (lihat catatan changelog) — perlu hati-hati agar gap antar lembar tetap akurat setelah ganti ukuran/orientasi.
+- `w:orient` hanyalah hint; sumber kebenaran tetap `w:w`/`w:h`. Saat Landscape, tulis width>height **dan** `w:orient="landscape"`.
+- Custom paper size & multi-section (`<w:sectPr>` per bagian) di luar lingkup awal — degrade ke satu section dulu.
 
 ---
 
