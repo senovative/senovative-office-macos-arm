@@ -143,6 +143,7 @@ report.docx                     (ZIP)
 | **1.j** | Produktivitas & Export | Export **PDF** (PDFKit), Find & Replace, spell check (NSSpellChecker), word/char count, styles gallery, template, autosave/Versions, recent files, print dialog | Fitur sehari-hari setara Word dasar |
 | **1.k** | **Packaging & Rilis** | Ikon final, `build.sh` release arm64, **`SenovativeWrite.dmg`** (background + symlink /Applications), unsigned dulu (signing/notarisasi menyusul saat akun Apple Developer siap) | `.dmg` terpasang & jalan di Mac M-series lain |
 | **1.l** | **Page Setup** | Dialog Page Setup (ukuran kertas, orientasi, margin, scaling) yang mengedit `WriteDocumentSection`, re-layout kanvas live, dan round-trip ke `<w:sectPr>` | Ubah kertas/orientasi/margin via dialog → kanvas & cetak ikut berubah, tersimpan benar di `.docx` & terbuka sesuai di Word |
+| **1.m** | **Zoom In/Out** | Kontrol zoom tampilan kanvas (slider − / + + persen) di status bar ala Word, menu View → Zoom, dan gesture pinch/⌘-scroll | Perbesar/perkecil tampilan halaman tanpa mengubah isi dokumen; persen akurat, caret/scroll tetap benar |
 
 **Milestone Fase 1:** `SenovativeWrite.dmg` rilis-able yang baca/tulis **`.docx` & `.doc`** asli.
 
@@ -188,6 +189,43 @@ report.docx                     (ZIP)
 - Re-layout pagination saat ukuran berubah memakai jalur `exclusionPaths` TextKit 1 yang sama dengan pagination saat ini (lihat catatan changelog) — perlu hati-hati agar gap antar lembar tetap akurat setelah ganti ukuran/orientasi.
 - `w:orient` hanyalah hint; sumber kebenaran tetap `w:w`/`w:h`. Saat Landscape, tulis width>height **dan** `w:orient="landscape"`.
 - Custom paper size & multi-section (`<w:sectPr>` per bagian) di luar lingkup awal — degrade ke satu section dulu.
+
+---
+
+#### 🟦 Fase 1.m — Zoom In/Out (detail)
+
+> Fitur tambahan pasca-1.l. Tujuan: pengguna bisa **memperbesar/memperkecil tampilan** dokumen (mis. 50%–500%) seperti kontrol zoom di kanan-bawah MS Word (slider **−/+** dengan persen), **tanpa mengubah isi atau ukuran kertas dokumen** — murni transformasi tampilan. Zoom **tidak** ditulis ke `.docx` sebagai konten (paling jauh hanya hint `w:zoom` di `settings.xml`, opsional).
+
+**Lingkup UI (mengacu status bar Word):**
+
+| Kontrol | Perilaku | Catatan |
+|---|---|---|
+| **Slider zoom** | Geser untuk set persen kontinu | Rentang awal 50%–200% (perluas 25%–500% menyusul). |
+| **Tombol −  /  +** | Turun/naik per langkah (mis. 10% atau preset 25/50/75/100/125/150/200) | Di kiri/kanan slider. |
+| **Label persen** | Tampil & klik → menu preset / input angka | Mis. "100%". |
+| **Menu View → Zoom** | Zoom In (`⌘+`), Zoom Out (`⌘-`), Actual Size (`⌘0`), Zoom to… | Selaras shortcut standar macOS. |
+| **Gesture** | Pinch trackpad & **⌘+scroll** untuk zoom | Opsional tapi natural. |
+
+**Pendekatan implementasi:**
+
+1. **Mekanisme zoom**: skala kanvas, **bukan** ukuran font model. Opsi:
+   - (a) `NSScrollView.magnification` (built-in; set `allowsMagnification = true`, `minMagnification`/`maxMagnification`, `magnify(toFit:)`/`setMagnification(_:centeredAt:)`). **Rekomendasi** — paling ringkas, sudah menangani scroll, gesture pinch, dan posisi center.
+   - (b) Transform `CALayer`/`scaleUnitSquare` manual (lebih banyak kerjaan; hanya bila (a) kurang).
+2. **State**: simpan `zoomLevel` di `WriteDocumentState` (atau view-state per window) — **bukan** di `WriteDocumentModel` (zoom = preferensi tampilan, bukan isi dokumen).
+3. **Status bar**: tambah slider + −/+ + label persen di status bar bawah (`WriteViewController`); dua arah sinkron dengan `magnification`.
+4. **Menu & shortcut**: View → Zoom In/Out/Actual Size, map ke `⌘+` / `⌘-` / `⌘0`.
+5. **Ketepatan**: zoom hanya memengaruhi render; **caret, selection, klik, ruler, dan pagination** harus tetap akurat pada koordinat ter-skala (`NSScrollView.magnification` menangani ini otomatis; verifikasi ruler ikut skala).
+6. **Persistensi (opsional)**: ingat zoom terakhir per window via state; opsi tulis `<w:zoom w:percent="…">` di `word/settings.xml` agar Word membuka pada zoom sama (round-trip preservation sudah mempertahankan `settings.xml` bila tak diutak-atik).
+
+**Definition of Done:**
+- Slider/−/+ dan menu View → Zoom mengubah perbesaran kanvas dengan persen akurat; **Actual Size (⌘0)** kembali ke 100%.
+- Isi dokumen & ukuran kertas **tidak berubah** saat zoom; menyimpan `.docx` tidak mengubah konten karena zoom.
+- Caret, seleksi, klik mouse, dan scrolling tetap presisi pada semua level zoom.
+
+**Catatan teknis & risiko:**
+- `NSScrollView.magnification` berlaku pada `documentView` (`PageContainerView`) — pastikan ruler & exclusion-path pagination tetap konsisten setelah skala (uji di 50% & 200%).
+- Hindari mengubah font/`pointSize` model untuk "zoom" — itu mengubah dokumen, bukan tampilan; pemisahan zoom (tampilan) vs ukuran kertas (Fase 1.l) harus jelas.
+- Zoom adalah **per-window/preferensi**, jadi tidak memicu "edited"/`updateChangeCount` kecuali memang menulis `w:zoom`.
 
 ---
 
