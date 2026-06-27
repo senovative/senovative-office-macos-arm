@@ -142,9 +142,7 @@ report.docx                     (ZIP)
 | **1.i** | **Tulis `.doc`** | Serializer CFB (tulis compound file) + writer **MS-DOC** biner (FIB, stream `WordDocument`/`1Table`, format) dari model | Simpan ke `.doc` yang terbuka benar di MS Word |
 | **1.j** | Produktivitas & Export | Export **PDF** (PDFKit), Find & Replace, spell check (NSSpellChecker), word/char count, styles gallery, template, autosave/Versions, recent files, print dialog | Fitur sehari-hari setara Word dasar |
 | **1.k** | **Packaging & Rilis** | Ikon final, `build.sh` release arm64, **`SenovativeWrite.dmg`** (background + symlink /Applications), unsigned dulu (signing/notarisasi menyusul saat akun Apple Developer siap) | `.dmg` terpasang & jalan di Mac M-series lain |
-| **1.l** | **Hardening & Fidelity** | Perbaikan arsitektur kritis (Multi-Container, O(N) Editor, Semantic Styles), Combo box **nama font**, **indikator "Page X of Y"**, **ruler selebar kertas** | Paginasi stabil, tidak lag, TOC MS Word berfungsi, UI Font/Ruler/Indikator jalan |
-| **1.m** | **Zoom In/Out** | Kontrol zoom tampilan kanvas (slider − / + + persen) di status bar ala Word, menu View → Zoom, dan gesture pinch/⌘-scroll | Perbesar/perkecil tampilan halaman tanpa mengubah isi dokumen; persen akurat, caret/scroll tetap benar |
-| **1.n** | **Page Setup** | Dialog Page Setup (ukuran kertas, orientasi, margin, scaling) yang mengedit `WriteDocumentSection`, re-layout kanvas live, dan round-trip ke `<w:sectPr>` | Ubah kertas/orientasi/margin via dialog → kanvas & cetak ikut berubah, tersimpan benar di `.docx` & terbuka sesuai di Word |
+| **1.l** | **Hardening, Zoom, & Page Setup** | Perbaikan arsitektur kritis (Multi-Container, O(N) Editor, Semantic Styles), UI kontrol font/ruler/indikator, Zoom in/out, dan dialog Page Setup. | Arsitektur stabil, tidak lag, TOC MS Word berfungsi, UI ribbon, zoom, dan pengaturan halaman berjalan lancar. |
 
 **Milestone Fase 1:** `SenovativeWrite.dmg` rilis-able yang baca/tulis **`.docx` & `.doc`** asli.
 
@@ -152,7 +150,9 @@ report.docx                     (ZIP)
 
 ---
 
-#### 🟦 Fase 1.n — Page Setup (detail)
+#### 🟦 Fase 1.l — Hardening, Zoom, & Page Setup (detail)
+
+**Tambahan dalam 1.l — Page Setup:**
 
 > Fitur tambahan pasca-1.k. Tujuan: pengguna bisa mengatur properti halaman (ukuran kertas, orientasi, margin, scaling) layaknya **File → Page Setup** di MS Word / dialog Page Setup macOS. Fondasinya sudah ada: `WriteDocumentSection` (di `SenovativeKit`) menyimpan `pageSize` & `margins`, parser/writer OOXML sudah baca/tulis `<w:pgSz>` & `<w:pgMar>`, dan pipeline print/PDF sudah memakai view halaman. Fase ini menyatukannya lewat satu dialog + re-layout live.
 
@@ -209,7 +209,7 @@ report.docx                     (ZIP)
 
 ---
 
-#### 🟦 Fase 1.m — Zoom In/Out (detail)
+**Tambahan dalam 1.l — Zoom In/Out:**
 
 > Fitur tambahan pasca-1.l. Tujuan: pengguna bisa **memperbesar/memperkecil tampilan** dokumen (mis. 50%–500%) seperti kontrol zoom di kanan-bawah MS Word (slider **−/+** dengan persen), **tanpa mengubah isi atau ukuran kertas dokumen** — murni transformasi tampilan. Zoom **tidak** ditulis ke `.docx` sebagai konten (paling jauh hanya hint `w:zoom` di `settings.xml`, opsional).
 
@@ -247,7 +247,7 @@ report.docx                     (ZIP)
 
 ---
 
-#### 🟦 Fase 1.l — Hardening & Fidelity (Font, Ruler, Paginasi) (detail)
+**Tambahan dalam 1.l — Hardening & Fidelity (Font, Ruler, Paginasi):**
 
 > Fitur tambahan pasca-1.m. Tujuan: kontrol **nama font** dan **ukuran font** langsung di ribbon (seperti grup Font di tab Home MS Word), bukan lewat Font Panel macOS. Fondasi sudah ada: `WriteRun.fontFamily` & `WriteRun.fontSize` tersimpan di model dan round-trip ke `<w:rFonts>`/`<w:sz>`; resolusi theme font (`majorHAnsi`/`minorHAnsi` → Calibri/Cambria) sudah ada dari fase fidelity. Fase ini menambah **UI inline** + apply ke selection/typing dan refleksi dua-arah.
 
