@@ -1,0 +1,16 @@
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# macOS packaging outputs
+*.dmg
+*.xcarchive
+*.dSYM
