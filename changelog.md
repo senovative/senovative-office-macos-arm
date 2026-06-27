@@ -792,3 +792,104 @@ Mengimplementasikan penulisan format lama biner `.doc` (Word 97-2003): **seriali
 - Terbuka benar di MS Word/textutil: **belum terkonfirmasi** (perlu STSH + bin-table lengkap + uji manual Word).
 
 Berikutnya: tulis **STSH minimal** + lengkapi bin-table agar `.doc` terbaca reader ketat, lalu **Fase 1.j — Produktivitas & Export** (PDF, Find & Replace, spell check, word count, dst.).
+
+---
+
+## 2026-06-27 — Fase 1.j Produktivitas & Export (Selesai 100%)
+
+**Dikerjakan oleh:** Codex CLI
+
+### Ringkasan
+
+Menyelesaikan Fase 1.j untuk fitur produktivitas harian `SenovativeWrite`: export PDF, print dialog, find & replace, spell/grammar checking, word/char count, styles gallery, template picker, autosave/Versions UI, dan recent files. Implementasi memanfaatkan fasilitas native macOS sebanyak mungkin supaya tetap ringan dan cocok dengan app document-based.
+
+### Perubahan Utama
+
+- **Statistik dokumen** (`WriteDocumentModel.swift`):
+  - Menambahkan `WriteDocumentStatistics`.
+  - Menambahkan `fullPlainText` yang mencakup paragraf dan isi tabel.
+  - Menambahkan `statistics` untuk menghitung word count, character count, character count tanpa whitespace, jumlah paragraf, dan jumlah tabel.
+
+- **Styles gallery** (`WriteDocumentModel.swift`, `WriteViewController.swift`, `MainMenuBuilder.swift`):
+  - Menambahkan `WriteNamedStyle` (`Title`, `Heading 1`, `Heading 2`, `Body`, `Quote`).
+  - Menu Format → Styles dan ribbon Styles sekarang bisa menerapkan preset style ke paragraf terpilih.
+  - Style application mempertahankan table block membership agar paragraf di dalam tabel tidak keluar dari tabel.
+
+- **Template picker**:
+  - Menambahkan `WriteDocumentTemplate` (`Blank Document`, `Business Letter`, `Report`, `Meeting Notes`).
+  - File → New From Template membuat dokumen baru dari template.
+  - Ribbon Templates bisa menerapkan template ke dokumen aktif.
+
+- **Status bar editor** (`WriteViewController.swift`):
+  - Status bar sekarang menampilkan jumlah kata dan karakter dokumen aktif.
+  - Hitungan ikut berubah saat model berubah dari hasil edit.
+
+- **Export PDF**:
+  - Menambahkan aksi `Export PDF...` di menu File dan tombol ribbon.
+  - Export memakai `dataWithPDF(inside:)` dari view halaman sehingga output mengikuti tampilan kanvas saat ini.
+  - Save dilakukan lewat `NSSavePanel` dengan content type `.pdf`.
+
+- **Print dialog**:
+  - Menambahkan `Print...` di menu File.
+  - Print memakai `NSPrintOperation(view:)` pada kanvas halaman.
+
+- **Find & Replace**:
+  - Menambahkan submenu Edit → Find:
+    - Find & Replace...
+    - Find Next
+    - Find Previous
+    - Replace
+    - Replace All
+  - Menambahkan panel find/replace sederhana berbasis `NSPanel`.
+  - Search case-insensitive, wrap-around, dan bekerja langsung pada `NSTextStorage`.
+
+- **Spell check**:
+  - Editor mengaktifkan continuous spell checking, grammar checking, dan automatic spelling correction.
+  - Menu Format menambahkan toggle:
+    - Check Spelling While Typing
+    - Check Grammar With Spelling
+
+- **Ribbon**:
+  - Menambahkan tombol/menu Styles, Templates, Find, dan Export PDF.
+
+- **Recent files & Versions/autosave UI** (`MainMenuBuilder.swift`, `WriteDocument.swift`):
+  - File → Open Recent menampilkan daftar `recentDocumentURLs` dari `NSDocumentController` dan refresh saat menu dibuka.
+  - Menambahkan Clear Menu untuk recent files.
+  - Menambahkan Duplicate, Rename, Move To, Revert To Saved, dan Browse All Versions agar autosave/Versions bawaan `NSDocument` dapat diakses eksplisit dari menu.
+  - `WriteDocument.autosavesInPlace` tetap aktif.
+
+- **Test** (`SenovativeKitTests.swift`):
+  - Menambahkan test statistik dokumen yang memastikan paragraf dan tabel ikut dihitung.
+  - Menambahkan test named styles.
+  - Menambahkan test document templates.
+
+### Verifikasi Build & Test
+
+- `swift test` (SenovativeKit): **19 test lulus**.
+- `swift test` (SenovativeUI): **1 test lulus**.
+- `xcodebuild -workspace SenovativeOffice.xcworkspace -scheme SenovativeWrite -configuration Debug -arch arm64 -derivedDataPath build -quiet build`: **lulus**.
+- `./Tools/build.sh` (release arm64): **`** BUILD SUCCEEDED **`**.
+
+### Catatan Teknis Untuk Agen Berikutnya
+
+- Export PDF saat ini adalah snapshot dari view halaman, bukan pipeline layout/PDFKit terpisah. Untuk fidelity cetak profesional, perlu pagination/export pipeline yang lebih deterministik.
+- Find & Replace masih sederhana: case-insensitive saja, belum regex, belum whole word, belum match case.
+- Word count memakai tokenisasi dasar berbasis huruf/angka. Untuk bahasa kompleks, perlu `NaturalLanguage` tokenizer.
+- Spell/grammar memanfaatkan AppKit; tidak ada custom dictionary UI.
+- Style gallery adalah preset formatting langsung pada paragraf/run, belum menulis semantic named style OOXML ke `styles.xml`.
+- Recent files memakai daftar native `NSDocumentController`, bukan halaman launcher khusus.
+
+### Status Roadmap
+
+✅ **Fase 1.j — Produktivitas & Export: SELESAI 100%**
+- Export PDF: selesai versi snapshot view.
+- Print dialog: selesai.
+- Find & Replace: selesai versi dasar.
+- Spell/grammar checking: selesai via AppKit.
+- Word/char count: selesai.
+- Styles gallery: selesai.
+- Template picker: selesai.
+- Recent files UI: selesai.
+- Versions/autosave UI eksplisit: selesai.
+
+Berikutnya: masuk ke fase berikutnya sesuai `planning.md`, sambil tetap mencatat batas fidelity PDF/styles OOXML untuk fase hardening berikutnya.

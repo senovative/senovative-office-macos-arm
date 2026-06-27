@@ -81,6 +81,35 @@ private struct WriteDocumentView: View {
                 RibbonIconButton("Insert Shape", systemImage: "square.on.circle") {
                     NSApplication.shared.sendAction(#selector(RichTextView.insertShapeObject(_:)), to: nil, from: nil)
                 }
+                Menu {
+                    Button("Title") { NSApplication.shared.sendAction(#selector(RichTextView.applyTitleStyle(_:)), to: nil, from: nil) }
+                    Button("Heading 1") { NSApplication.shared.sendAction(#selector(RichTextView.applyHeading1Style(_:)), to: nil, from: nil) }
+                    Button("Heading 2") { NSApplication.shared.sendAction(#selector(RichTextView.applyHeading2Style(_:)), to: nil, from: nil) }
+                    Button("Body") { NSApplication.shared.sendAction(#selector(RichTextView.applyBodyStyle(_:)), to: nil, from: nil) }
+                    Button("Quote") { NSApplication.shared.sendAction(#selector(RichTextView.applyQuoteStyle(_:)), to: nil, from: nil) }
+                } label: {
+                    Label("Styles", systemImage: "textformat.size")
+                        .labelStyle(.iconOnly)
+                }
+                .menuStyle(.borderlessButton)
+                .help("Styles")
+                Menu {
+                    Button("Blank Document") { NSApplication.shared.sendAction(#selector(RichTextView.applyBlankTemplate(_:)), to: nil, from: nil) }
+                    Button("Business Letter") { NSApplication.shared.sendAction(#selector(RichTextView.applyBusinessLetterTemplate(_:)), to: nil, from: nil) }
+                    Button("Report") { NSApplication.shared.sendAction(#selector(RichTextView.applyReportTemplate(_:)), to: nil, from: nil) }
+                    Button("Meeting Notes") { NSApplication.shared.sendAction(#selector(RichTextView.applyMeetingNotesTemplate(_:)), to: nil, from: nil) }
+                } label: {
+                    Label("Templates", systemImage: "doc.on.doc")
+                        .labelStyle(.iconOnly)
+                }
+                .menuStyle(.borderlessButton)
+                .help("Templates")
+                RibbonIconButton("Find", systemImage: "magnifyingglass") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.showFindReplacePanel(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Export PDF", systemImage: "doc.richtext") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.exportPDF(_:)), to: nil, from: nil)
+                }
             }
 
             HSplitView {
@@ -96,9 +125,15 @@ private struct WriteDocumentView: View {
     }
 
     private var statusBar: some View {
-        HStack {
+        let stats = state.model.statistics
+        return HStack {
             StatusPill(LocalizedStringKey(state.statusText))
             Spacer()
+            Text("\(stats.wordCount) words • \(stats.characterCount) chars")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Divider()
+                .frame(height: 14)
             Text("DOCX")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -140,6 +175,9 @@ private struct DocumentCanvas: NSViewRepresentable {
         textView.isRichText = true
         textView.allowsUndo = true
         textView.usesFontPanel = true
+        textView.isContinuousSpellCheckingEnabled = true
+        textView.isGrammarCheckingEnabled = true
+        textView.isAutomaticSpellingCorrectionEnabled = true
         textView.drawsBackground = true
         textView.backgroundColor = .textBackgroundColor
         textView.textColor = .labelColor
@@ -664,7 +702,137 @@ private final class WriteShapeAttachment: NSTextAttachment {
     }
 }
 
-private final class RichTextView: NSTextView {
+final class RichTextView: NSTextView {
+    fileprivate var currentFindString = ""
+    fileprivate var currentReplaceString = ""
+    private var findReplaceController: FindReplacePanelController?
+
+    @objc func showFindReplacePanel(_ sender: Any?) {
+        if currentFindString.isEmpty, selectedRange().length > 0 {
+            currentFindString = selectedString() ?? ""
+        }
+        if findReplaceController == nil {
+            findReplaceController = FindReplacePanelController(textView: self)
+        }
+        findReplaceController?.refreshFields()
+        findReplaceController?.showWindow(sender)
+        findReplaceController?.window?.makeKeyAndOrderFront(sender)
+    }
+
+    @objc func findNext(_ sender: Any?) {
+        guard ensureFindString(sender) else { return }
+        selectMatch(for: currentFindString, backwards: false)
+    }
+
+    @objc func findPrevious(_ sender: Any?) {
+        guard ensureFindString(sender) else { return }
+        selectMatch(for: currentFindString, backwards: true)
+    }
+
+    @objc func replaceSelectionOrNext(_ sender: Any?) {
+        guard ensureFindString(sender) else { return }
+        let targetRange: NSRange
+        if selectedRangeMatches(currentFindString) {
+            targetRange = selectedRange()
+        } else if let found = selectMatch(for: currentFindString, backwards: false) {
+            targetRange = found
+        } else {
+            return
+        }
+        replace(range: targetRange, with: currentReplaceString)
+    }
+
+    @objc func replaceAllMatches(_ sender: Any?) {
+        guard ensureFindString(sender), let storage = textStorage else { return }
+        let text = storage.string as NSString
+        var matches: [NSRange] = []
+        var cursor = 0
+        while cursor < text.length {
+            let range = NSRange(location: cursor, length: text.length - cursor)
+            let found = text.range(of: currentFindString, options: [.caseInsensitive], range: range)
+            if found.location == NSNotFound { break }
+            matches.append(found)
+            cursor = max(found.location + found.length, cursor + 1)
+        }
+        guard !matches.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        let fullRange = NSRange(location: 0, length: text.length)
+        guard shouldChangeText(in: fullRange, replacementString: nil) else { return }
+        storage.beginEditing()
+        for match in matches.reversed() {
+            storage.replaceCharacters(in: match, with: currentReplaceString)
+        }
+        storage.endEditing()
+        setSelectedRange(NSRange(location: 0, length: 0))
+        didChangeText()
+    }
+
+    @objc func exportPDF(_ sender: Any?) {
+        guard let sourceView = pdfSourceView else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        let baseName = window?.representedURL?.deletingPathExtension().lastPathComponent
+            ?? String(localized: "Untitled")
+        panel.nameFieldStringValue = "\(baseName).pdf"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        sourceView.layoutSubtreeIfNeeded()
+        let pdfData = sourceView.dataWithPDF(inside: sourceView.bounds)
+        do {
+            try pdfData.write(to: url, options: .atomic)
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = String(localized: "Could not export PDF")
+            alert.runModal()
+        }
+    }
+
+    @objc func printDocumentView(_ sender: Any?) {
+        guard let sourceView = pdfSourceView else { return }
+        sourceView.layoutSubtreeIfNeeded()
+        NSPrintOperation(view: sourceView).run()
+    }
+
+    @objc func applyTitleStyle(_ sender: Any?) {
+        applyNamedStyle(.title)
+    }
+
+    @objc func applyHeading1Style(_ sender: Any?) {
+        applyNamedStyle(.heading1)
+    }
+
+    @objc func applyHeading2Style(_ sender: Any?) {
+        applyNamedStyle(.heading2)
+    }
+
+    @objc func applyBodyStyle(_ sender: Any?) {
+        applyNamedStyle(.body)
+    }
+
+    @objc func applyQuoteStyle(_ sender: Any?) {
+        applyNamedStyle(.quote)
+    }
+
+    @objc func applyBlankTemplate(_ sender: Any?) {
+        applyTemplate(.blank)
+    }
+
+    @objc func applyBusinessLetterTemplate(_ sender: Any?) {
+        applyTemplate(.businessLetter)
+    }
+
+    @objc func applyReportTemplate(_ sender: Any?) {
+        applyTemplate(.report)
+    }
+
+    @objc func applyMeetingNotesTemplate(_ sender: Any?) {
+        applyTemplate(.meetingNotes)
+    }
+
     @objc func insertImageObject(_ sender: Any?) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -800,6 +968,276 @@ private final class RichTextView: NSTextView {
         }
         storage.endEditing()
         didChangeText()
+    }
+
+    private func applyNamedStyle(_ style: WriteNamedStyle) {
+        guard let storage = textStorage else { return }
+        let selected = selectedRange()
+        let text = storage.string as NSString
+        let targetRange = text.paragraphRange(for: selected.length > 0 ? selected : NSRange(location: min(selected.location, storage.length), length: 0))
+        guard targetRange.length > 0 else { return }
+        guard shouldChangeText(in: targetRange, replacementString: nil) else { return }
+
+        storage.beginEditing()
+        applyCharacterStyle(style, range: targetRange, storage: storage)
+        text.enumerateSubstrings(in: targetRange, options: [.byParagraphs, .substringNotRequired]) { _, range, _, _ in
+            self.applyParagraphStyle(style, range: range, storage: storage)
+        }
+        storage.endEditing()
+        didChangeText()
+    }
+
+    private func applyCharacterStyle(_ style: WriteNamedStyle, range: NSRange, storage: NSTextStorage) {
+        let spec = characterStyleSpec(style)
+        var fontRuns: [(NSFont, NSRange)] = []
+        storage.enumerateAttribute(.font, in: range, options: []) { value, runRange, _ in
+            let baseFont = value as? NSFont ?? WriteAttributedStringBridge.defaultFont
+            var font = NSFontManager.shared.convert(baseFont, toSize: spec.size ?? baseFont.pointSize)
+            if spec.bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
+            if !spec.bold { font = NSFontManager.shared.convert(font, toNotHaveTrait: .boldFontMask) }
+            if spec.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
+            if !spec.italic { font = NSFontManager.shared.convert(font, toNotHaveTrait: .italicFontMask) }
+            fontRuns.append((font, runRange))
+        }
+        for (font, runRange) in fontRuns {
+            storage.addAttribute(.font, value: font, range: runRange)
+        }
+
+        storage.removeAttribute(.underlineStyle, range: range)
+        storage.removeAttribute(.backgroundColor, range: range)
+        storage.removeAttribute(.superscript, range: range)
+        if let color = spec.color {
+            storage.addAttribute(.foregroundColor, value: color, range: range)
+        } else {
+            storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+        }
+    }
+
+    private func applyParagraphStyle(_ style: WriteNamedStyle, range: NSRange, storage: NSTextStorage) {
+        guard range.location < storage.length else { return }
+        let currentStyle = (storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
+            ?? NSMutableParagraphStyle()
+
+        let tableBlocks = currentStyle.textBlocks
+        currentStyle.textLists = []
+        switch style {
+        case .title:
+            currentStyle.alignment = .center
+            currentStyle.paragraphSpacingBefore = 0
+            currentStyle.paragraphSpacing = 18
+            currentStyle.headIndent = 0
+            currentStyle.firstLineHeadIndent = 0
+        case .heading1:
+            currentStyle.alignment = .left
+            currentStyle.paragraphSpacingBefore = 18
+            currentStyle.paragraphSpacing = 8
+            currentStyle.headIndent = 0
+            currentStyle.firstLineHeadIndent = 0
+        case .heading2:
+            currentStyle.alignment = .left
+            currentStyle.paragraphSpacingBefore = 14
+            currentStyle.paragraphSpacing = 6
+            currentStyle.headIndent = 0
+            currentStyle.firstLineHeadIndent = 0
+        case .body:
+            currentStyle.alignment = .left
+            currentStyle.lineSpacing = 0
+            currentStyle.paragraphSpacingBefore = 0
+            currentStyle.paragraphSpacing = 8
+            currentStyle.headIndent = 0
+            currentStyle.firstLineHeadIndent = 0
+        case .quote:
+            currentStyle.alignment = .left
+            currentStyle.paragraphSpacingBefore = 8
+            currentStyle.paragraphSpacing = 8
+            currentStyle.headIndent = 36
+            currentStyle.firstLineHeadIndent = 0
+        }
+        currentStyle.textBlocks = tableBlocks
+        storage.addAttribute(.paragraphStyle, value: currentStyle, range: range)
+    }
+
+    private func characterStyleSpec(_ style: WriteNamedStyle) -> (size: CGFloat?, bold: Bool, italic: Bool, color: NSColor?) {
+        switch style {
+        case .title:
+            (28, true, false, nil)
+        case .heading1:
+            (22, true, false, nil)
+        case .heading2:
+            (17, true, false, nil)
+        case .body:
+            (15, false, false, nil)
+        case .quote:
+            (15, false, true, NSColor.secondaryLabelColor)
+        }
+    }
+
+    private func applyTemplate(_ template: WriteDocumentTemplate) {
+        guard let storage = textStorage else { return }
+        let fullRange = NSRange(location: 0, length: storage.length)
+        let attributed = WriteAttributedStringBridge.attributedString(from: template.model)
+        guard shouldChangeText(in: fullRange, replacementString: attributed.string) else { return }
+        storage.setAttributedString(attributed)
+        setSelectedRange(NSRange(location: 0, length: 0))
+        didChangeText()
+    }
+
+    private var pdfSourceView: NSView? {
+        var view: NSView? = self
+        while let current = view {
+            if current is PageContainerView { return current }
+            view = current.superview
+        }
+        return self
+    }
+
+    private func ensureFindString(_ sender: Any?) -> Bool {
+        if currentFindString.isEmpty {
+            showFindReplacePanel(sender)
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    private func selectMatch(for query: String, backwards: Bool) -> NSRange? {
+        guard !query.isEmpty, let storage = textStorage else { return nil }
+        let text = storage.string as NSString
+        guard text.length > 0 else { return nil }
+
+        let selected = selectedRange()
+        let found: NSRange
+        if backwards {
+            let end = min(selected.location, text.length)
+            found = find(query, in: text, range: NSRange(location: 0, length: end), backwards: true)
+                ?? find(query, in: text, range: NSRange(location: 0, length: text.length), backwards: true)
+                ?? NSRange(location: NSNotFound, length: 0)
+        } else {
+            let start = min(selected.location + selected.length, text.length)
+            found = find(query, in: text, range: NSRange(location: start, length: text.length - start), backwards: false)
+                ?? find(query, in: text, range: NSRange(location: 0, length: start), backwards: false)
+                ?? NSRange(location: NSNotFound, length: 0)
+        }
+
+        guard found.location != NSNotFound else {
+            NSSound.beep()
+            return nil
+        }
+        setSelectedRange(found)
+        scrollRangeToVisible(found)
+        return found
+    }
+
+    private func find(_ query: String, in text: NSString, range: NSRange, backwards: Bool) -> NSRange? {
+        guard range.length > 0 else { return nil }
+        var options: NSString.CompareOptions = [.caseInsensitive]
+        if backwards { options.insert(.backwards) }
+        let found = text.range(of: query, options: options, range: range)
+        return found.location == NSNotFound ? nil : found
+    }
+
+    private func selectedRangeMatches(_ query: String) -> Bool {
+        guard let selected = selectedString(), !query.isEmpty else { return false }
+        return selected.range(of: query, options: [.caseInsensitive]) != nil && selected.count == query.count
+    }
+
+    private func selectedString() -> String? {
+        guard let storage = textStorage else { return nil }
+        let range = selectedRange()
+        guard range.length > 0, NSMaxRange(range) <= storage.length else { return nil }
+        return (storage.string as NSString).substring(with: range)
+    }
+
+    @discardableResult
+    private func replace(range: NSRange, with replacement: String) -> Bool {
+        guard let storage = textStorage else { return false }
+        guard shouldChangeText(in: range, replacementString: replacement) else { return false }
+        storage.replaceCharacters(in: range, with: replacement)
+        setSelectedRange(NSRange(location: range.location, length: (replacement as NSString).length))
+        didChangeText()
+        return true
+    }
+}
+
+private final class FindReplacePanelController: NSWindowController {
+    private weak var textView: RichTextView?
+    private let findField = NSTextField(frame: NSRect(x: 92, y: 106, width: 280, height: 24))
+    private let replaceField = NSTextField(frame: NSRect(x: 92, y: 70, width: 280, height: 24))
+
+    init(textView: RichTextView) {
+        self.textView = textView
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 150),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = String(localized: "Find & Replace")
+        panel.isReleasedWhenClosed = false
+
+        let content = NSView(frame: panel.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 460, height: 150))
+        panel.contentView = content
+
+        let findLabel = NSTextField(labelWithString: String(localized: "Find"))
+        findLabel.frame = NSRect(x: 20, y: 109, width: 60, height: 18)
+        content.addSubview(findLabel)
+        content.addSubview(findField)
+
+        let replaceLabel = NSTextField(labelWithString: String(localized: "Replace"))
+        replaceLabel.frame = NSRect(x: 20, y: 73, width: 66, height: 18)
+        content.addSubview(replaceLabel)
+        content.addSubview(replaceField)
+
+        super.init(window: panel)
+
+        addButton(String(localized: "Next"), frame: NSRect(x: 384, y: 104, width: 60, height: 28), action: #selector(next(_:)), to: content)
+        addButton(String(localized: "Previous"), frame: NSRect(x: 384, y: 70, width: 60, height: 28), action: #selector(previous(_:)), to: content)
+        addButton(String(localized: "Replace"), frame: NSRect(x: 192, y: 24, width: 84, height: 28), action: #selector(replace(_:)), to: content)
+        addButton(String(localized: "Replace All"), frame: NSRect(x: 288, y: 24, width: 96, height: 28), action: #selector(replaceAll(_:)), to: content)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func refreshFields() {
+        findField.stringValue = textView?.currentFindString ?? ""
+        replaceField.stringValue = textView?.currentReplaceString ?? ""
+    }
+
+    private func syncFields() {
+        textView?.currentFindString = findField.stringValue
+        textView?.currentReplaceString = replaceField.stringValue
+    }
+
+    private func addButton(_ title: String, frame: NSRect, action: Selector, to content: NSView) {
+        let button = NSButton(frame: frame)
+        button.title = title
+        button.bezelStyle = .rounded
+        button.target = self
+        button.action = action
+        content.addSubview(button)
+    }
+
+    @objc private func next(_ sender: Any?) {
+        syncFields()
+        textView?.findNext(sender)
+    }
+
+    @objc private func previous(_ sender: Any?) {
+        syncFields()
+        textView?.findPrevious(sender)
+    }
+
+    @objc private func replace(_ sender: Any?) {
+        syncFields()
+        textView?.replaceSelectionOrNext(sender)
+    }
+
+    @objc private func replaceAll(_ sender: Any?) {
+        syncFields()
+        textView?.replaceAllMatches(sender)
     }
 }
 

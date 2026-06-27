@@ -313,6 +313,235 @@ public struct WriteDocumentModel: OfficeDocumentModel {
     }
 }
 
+public struct WriteDocumentStatistics: Equatable, Sendable {
+    public var wordCount: Int
+    public var characterCount: Int
+    public var characterCountExcludingWhitespace: Int
+    public var paragraphCount: Int
+    public var tableCount: Int
+
+    public init(
+        wordCount: Int,
+        characterCount: Int,
+        characterCountExcludingWhitespace: Int,
+        paragraphCount: Int,
+        tableCount: Int
+    ) {
+        self.wordCount = wordCount
+        self.characterCount = characterCount
+        self.characterCountExcludingWhitespace = characterCountExcludingWhitespace
+        self.paragraphCount = paragraphCount
+        self.tableCount = tableCount
+    }
+}
+
+public enum WriteNamedStyle: String, CaseIterable, Equatable, Sendable {
+    case title
+    case heading1
+    case heading2
+    case body
+    case quote
+
+    public var displayName: String {
+        switch self {
+        case .title:
+            "Title"
+        case .heading1:
+            "Heading 1"
+        case .heading2:
+            "Heading 2"
+        case .body:
+            "Body"
+        case .quote:
+            "Quote"
+        }
+    }
+
+    public func applying(to paragraph: WriteParagraph) -> WriteParagraph {
+        var paragraph = paragraph
+        paragraph.list = nil
+        paragraph.pageBreakBefore = false
+
+        switch self {
+        case .title:
+            paragraph.alignment = .center
+            paragraph.spacingBefore = 0
+            paragraph.spacingAfter = 18
+            paragraph.leftIndent = nil
+            paragraph.firstLineIndent = nil
+            paragraph.runs = styledRuns(paragraph.runs, fontSize: 28, bold: true)
+        case .heading1:
+            paragraph.alignment = .left
+            paragraph.spacingBefore = 18
+            paragraph.spacingAfter = 8
+            paragraph.leftIndent = nil
+            paragraph.firstLineIndent = nil
+            paragraph.runs = styledRuns(paragraph.runs, fontSize: 22, bold: true)
+        case .heading2:
+            paragraph.alignment = .left
+            paragraph.spacingBefore = 14
+            paragraph.spacingAfter = 6
+            paragraph.leftIndent = nil
+            paragraph.firstLineIndent = nil
+            paragraph.runs = styledRuns(paragraph.runs, fontSize: 17, bold: true)
+        case .body:
+            paragraph.alignment = .left
+            paragraph.lineSpacing = nil
+            paragraph.spacingBefore = nil
+            paragraph.spacingAfter = 8
+            paragraph.leftIndent = nil
+            paragraph.firstLineIndent = nil
+            paragraph.runs = styledRuns(paragraph.runs, fontSize: 15)
+        case .quote:
+            paragraph.alignment = .left
+            paragraph.spacingBefore = 8
+            paragraph.spacingAfter = 8
+            paragraph.leftIndent = 36
+            paragraph.firstLineIndent = nil
+            paragraph.runs = styledRuns(paragraph.runs, italic: true, textColorHex: "555555")
+        }
+
+        return paragraph
+    }
+
+    private func styledRuns(
+        _ runs: [WriteRun],
+        fontSize: Double? = nil,
+        bold: Bool = false,
+        italic: Bool = false,
+        textColorHex: String? = nil
+    ) -> [WriteRun] {
+        let sourceRuns = runs.isEmpty ? [WriteRun(text: "")] : runs
+        return sourceRuns.map { run in
+            var run = run
+            run.bold = bold
+            run.italic = italic
+            run.underline = false
+            run.fontSize = fontSize
+            run.textColorHex = textColorHex
+            run.highlightColorHex = nil
+            run.verticalAlignment = .baseline
+            return run
+        }
+    }
+}
+
+public enum WriteDocumentTemplate: String, CaseIterable, Equatable, Sendable {
+    case blank
+    case businessLetter
+    case report
+    case meetingNotes
+
+    public var displayName: String {
+        switch self {
+        case .blank:
+            "Blank Document"
+        case .businessLetter:
+            "Business Letter"
+        case .report:
+            "Report"
+        case .meetingNotes:
+            "Meeting Notes"
+        }
+    }
+
+    public var model: WriteDocumentModel {
+        switch self {
+        case .blank:
+            return WriteDocumentModel.empty
+        case .businessLetter:
+            return WriteDocumentModel(title: displayName, paragraphs: [
+                WriteParagraph(runs: [WriteRun(text: "Sender Name")]),
+                WriteParagraph(runs: [WriteRun(text: "Company")]),
+                WriteParagraph(runs: [WriteRun(text: "Address")]),
+                WriteParagraph(),
+                WriteParagraph(runs: [WriteRun(text: "Recipient Name")]),
+                WriteParagraph(runs: [WriteRun(text: "Recipient Company")]),
+                WriteParagraph(),
+                WriteNamedStyle.heading1.applying(to: WriteParagraph(runs: [WriteRun(text: "Subject")])) ,
+                WriteParagraph(runs: [WriteRun(text: "Dear Recipient,")]),
+                WriteParagraph(runs: [WriteRun(text: "Write your message here.")]),
+                WriteParagraph(runs: [WriteRun(text: "Sincerely,")]),
+                WriteParagraph(runs: [WriteRun(text: "Sender Name")]),
+            ])
+        case .report:
+            return WriteDocumentModel(title: displayName, paragraphs: [
+                WriteNamedStyle.title.applying(to: WriteParagraph(runs: [WriteRun(text: "Report Title")])),
+                WriteNamedStyle.body.applying(to: WriteParagraph(runs: [WriteRun(text: "Prepared by: Name")])),
+                WriteNamedStyle.heading1.applying(to: WriteParagraph(runs: [WriteRun(text: "Executive Summary")])),
+                WriteParagraph(runs: [WriteRun(text: "Summarize the key findings and recommendation.")]),
+                WriteNamedStyle.heading1.applying(to: WriteParagraph(runs: [WriteRun(text: "Background")])),
+                WriteParagraph(runs: [WriteRun(text: "Add context, scope, and assumptions.")]),
+                WriteNamedStyle.heading1.applying(to: WriteParagraph(runs: [WriteRun(text: "Findings")])),
+                WriteParagraph(runs: [WriteRun(text: "List important observations and evidence.")]),
+                WriteNamedStyle.heading1.applying(to: WriteParagraph(runs: [WriteRun(text: "Next Steps")])),
+                WriteParagraph(runs: [WriteRun(text: "Define owners and due dates.")]),
+            ])
+        case .meetingNotes:
+            return WriteDocumentModel(title: displayName, paragraphs: [
+                WriteNamedStyle.title.applying(to: WriteParagraph(runs: [WriteRun(text: "Meeting Notes")])),
+                WriteParagraph(runs: [WriteRun(text: "Date:")]),
+                WriteParagraph(runs: [WriteRun(text: "Attendees:")]),
+                WriteNamedStyle.heading1.applying(to: WriteParagraph(runs: [WriteRun(text: "Agenda")])),
+                WriteParagraph(runs: [WriteRun(text: "Agenda item")], list: WriteListStyle(kind: .bullet)),
+                WriteNamedStyle.heading1.applying(to: WriteParagraph(runs: [WriteRun(text: "Decisions")])),
+                WriteParagraph(runs: [WriteRun(text: "Decision")], list: WriteListStyle(kind: .bullet)),
+                WriteNamedStyle.heading1.applying(to: WriteParagraph(runs: [WriteRun(text: "Action Items")])),
+                WriteParagraph(runs: [WriteRun(text: "Owner - action item")], list: WriteListStyle(kind: .numbered)),
+            ])
+        }
+    }
+}
+
+public extension WriteDocumentModel {
+    /// Whole-document plain text, including table cells. Cells are tab-separated
+    /// and rows/blocks are newline-separated so word count sees natural breaks.
+    var fullPlainText: String {
+        blocks.map { block -> String in
+            switch block {
+            case let .paragraph(paragraph):
+                paragraph.plainText
+            case let .table(table):
+                table.rows.map { row in
+                    row.cells.map(\.plainText).joined(separator: "\t")
+                }.joined(separator: "\n")
+            }
+        }.joined(separator: "\n")
+    }
+
+    var statistics: WriteDocumentStatistics {
+        let text = fullPlainText
+        let wordCount = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).count
+        let characterCount = text.count
+        let characterCountExcludingWhitespace = text.reduce(into: 0) { count, character in
+            if !character.isWhitespace { count += 1 }
+        }
+        let paragraphCount = blocks.reduce(into: 0) { count, block in
+            switch block {
+            case .paragraph:
+                count += 1
+            case let .table(table):
+                count += table.rows.reduce(0) { rowCount, row in
+                    rowCount + row.cells.reduce(0) { cellCount, cell in
+                        cellCount + cell.paragraphs.count
+                    }
+                }
+            }
+        }
+        let tableCount = blocks.reduce(into: 0) { count, block in
+            if case .table = block { count += 1 }
+        }
+
+        return WriteDocumentStatistics(
+            wordCount: wordCount,
+            characterCount: characterCount,
+            characterCountExcludingWhitespace: characterCountExcludingWhitespace,
+            paragraphCount: paragraphCount,
+            tableCount: tableCount
+        )
+    }
+}
+
 public extension WriteDocumentModel {
     static let empty = WriteDocumentModel(
         title: String(localized: "Untitled"),

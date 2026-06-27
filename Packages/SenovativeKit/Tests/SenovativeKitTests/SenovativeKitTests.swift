@@ -418,3 +418,46 @@ private let onePixelPNG = Data([
 
     #expect(parsed.paragraphs.first?.plainText == "Just text")
 }
+
+@Test func documentStatisticsIncludeParagraphsAndTables() {
+    let model = WriteDocumentModel(title: "Stats", blocks: [
+        .paragraph(WriteParagraph(runs: [WriteRun(text: "Hello world")])),
+        .table(WriteTable(rows: [
+            WriteTableRow(cells: [
+                WriteTableCell(paragraphs: [WriteParagraph(runs: [WriteRun(text: "One cell")])]),
+                WriteTableCell(paragraphs: [WriteParagraph(runs: [WriteRun(text: "Two")])]),
+            ]),
+        ])),
+        .paragraph(WriteParagraph(runs: [WriteRun(text: "Final line")]))
+    ])
+
+    #expect(model.fullPlainText == "Hello world\nOne cell\tTwo\nFinal line")
+    #expect(model.statistics.wordCount == 7)
+    #expect(model.statistics.characterCount == 35)
+    #expect(model.statistics.characterCountExcludingWhitespace == 29)
+    #expect(model.statistics.paragraphCount == 4)
+    #expect(model.statistics.tableCount == 1)
+}
+
+@Test func namedStylesApplyParagraphAndRunFormatting() {
+    let paragraph = WriteParagraph(runs: [WriteRun(text: "Section")], list: WriteListStyle(kind: .bullet))
+    let heading = WriteNamedStyle.heading1.applying(to: paragraph)
+
+    #expect(heading.list == nil)
+    #expect(heading.spacingBefore == 18)
+    #expect(heading.spacingAfter == 8)
+    #expect(heading.runs.first?.bold == true)
+    #expect(heading.runs.first?.fontSize == 22)
+
+    let quote = WriteNamedStyle.quote.applying(to: paragraph)
+    #expect(quote.leftIndent == 36)
+    #expect(quote.runs.first?.italic == true)
+    #expect(quote.runs.first?.textColorHex == "555555")
+}
+
+@Test func documentTemplatesProvideUsableStartingContent() {
+    #expect(WriteDocumentTemplate.allCases.count == 4)
+    #expect(WriteDocumentTemplate.report.model.statistics.wordCount > 10)
+    #expect(WriteDocumentTemplate.meetingNotes.model.paragraphs.contains { $0.list?.kind == .numbered })
+    #expect(WriteDocumentTemplate.blank.model.paragraphs.count == 1)
+}
