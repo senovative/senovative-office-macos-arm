@@ -50,7 +50,7 @@ enum MainMenuBuilder {
         menu.addItem(withTitle: String(localized: "Browse All Versions..."), action: #selector(NSDocument.browseVersions(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: String(localized: "Export PDF..."), action: #selector(RichTextView.exportPDF(_:)), keyEquivalent: "e").keyEquivalentModifierMask = [.command, .shift]
-        menu.addItem(withTitle: String(localized: "Print..."), action: #selector(RichTextView.printDocumentView(_:)), keyEquivalent: "p")
+        menu.addItem(withTitle: String(localized: "Print..."), action: #selector(NSDocument.printDocument(_:)), keyEquivalent: "p")
         item.submenu = menu
         return item
     }

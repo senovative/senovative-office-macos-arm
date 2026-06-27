@@ -22,6 +22,20 @@ final class WriteViewController: NSViewController {
         let hostingView = NSHostingView(rootView: WriteDocumentView(state: document.state))
         view = hostingView
     }
+
+    /// The on-screen page view used as the print source (same view the PDF
+    /// export snapshots), so printed output matches what the user sees.
+    var printableView: NSView? {
+        Self.findPageContainer(in: view) ?? view
+    }
+
+    private static func findPageContainer(in view: NSView) -> NSView? {
+        if view is PageContainerView { return view }
+        for subview in view.subviews {
+            if let found = findPageContainer(in: subview) { return found }
+        }
+        return nil
+    }
 }
 
 private struct WriteDocumentView: View {
@@ -830,12 +844,6 @@ final class RichTextView: NSTextView {
             alert.messageText = String(localized: "Could not export PDF")
             alert.runModal()
         }
-    }
-
-    @objc func printDocumentView(_ sender: Any?) {
-        guard let sourceView = pdfSourceView else { return }
-        sourceView.layoutSubtreeIfNeeded()
-        NSPrintOperation(view: sourceView).run()
     }
 
     @objc func applyTitleStyle(_ sender: Any?) {

@@ -38,6 +38,30 @@ final class WriteDocument: NSDocument {
         state.loadModel(model, status: String(localized: "Opened \(name)"))
     }
 
+    override func printDocument(_ sender: Any?) {
+        guard let viewController = windowControllers.first?.contentViewController as? WriteViewController,
+              let printable = viewController.printableView else {
+            super.printDocument(sender)
+            return
+        }
+
+        printable.layoutSubtreeIfNeeded()
+        let info = (printInfo.copy() as? NSPrintInfo) ?? NSPrintInfo()
+        info.horizontalPagination = .fit
+        info.verticalPagination = .automatic
+        info.isHorizontallyCentered = true
+        info.isVerticallyCentered = false
+
+        let operation = NSPrintOperation(view: printable, printInfo: info)
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        if let window = viewController.view.window {
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            operation.run()
+        }
+    }
+
     override func data(ofType typeName: String) throws -> Data {
         if typeName == OfficeFileType.docx.contentTypeIdentifier {
             return try OOXMLEngine.writeWord(model: state.model)

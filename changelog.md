@@ -1026,6 +1026,12 @@ Tiga perbaikan fidelity/validitas berdasarkan temuan dari sample Word asli (`sam
 - **Warna Heading 2** (`Document/WriteDocumentModel.swift`):
   - `WriteNamedStyle.heading2` diperbaiki dari `365F91` (gelap, salah) ke `4F81BD` — warna `accent1` Heading 2 standar Word 2010, cocok dengan rendering Word pada sample. Heading 1 tetap `365F91` (themeShade BF) dan Title tetap `17365D`.
 
+- **Fix Print "does not support printing"** (`WriteDocument.swift`, `WriteViewController.swift`, `MainMenuBuilder.swift`, `SenovativeWrite.entitlements`):
+  - Akar masalah: `WriteDocument` tidak meng-override jalur print apa pun, jadi `printDocument:` jatuh ke implementasi default `NSDocument` yang menampilkan alert "This application does not support printing". Action menu lama (`RichTextView.printDocumentView`) tidak andal terjangkau lewat responder chain, dan override `printOperation(withSettings:error:)` ternyata tidak terpanggil di macOS ini.
+  - Solusi: override `printDocument(_:)` langsung pada `WriteDocument` — membangun `NSPrintOperation` dari view halaman (`WriteViewController.printableView`, view yang sama dipakai Export PDF) dan menjalankannya modal pada window. Menu "Print…" diarahkan ke `#selector(NSDocument.printDocument(_:))` standar; `RichTextView.printDocumentView` yang usang dihapus.
+  - Menambahkan entitlement `com.apple.security.print` agar print diizinkan di dalam App Sandbox.
+  - Diverifikasi langsung: Cmd+P kini memunculkan panel print macOS (preview 2 halaman, opsi PDF/printer), bukan alert error.
+
 - **Validitas OOXML writer — adopsi aturan skill `docx`** (`WordprocessingML.swift`):
   - **Urutan elemen `<w:pPr>`** diperbaiki ke urutan skema CT_PPr: `pageBreakBefore → numPr → spacing → ind → jc` (sebelumnya `jc` diemit pertama dan `numPr` terakhir — melanggar skema, berisiko ditolak Google Docs/validator).
   - **Lebar tabel** kini `<w:tblW w:w="<jumlah kolom>" w:type="dxa"/>` (sebelumnya `w:w="0" w:type="auto"`); `tblW` = `colWidth × columns` agar persis sama dengan jumlah `gridCol`/`tcW` (dual-width).
