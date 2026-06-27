@@ -893,3 +893,29 @@ Menyelesaikan Fase 1.j untuk fitur produktivitas harian `SenovativeWrite`: expor
 - Versions/autosave UI eksplisit: selesai.
 
 Berikutnya: masuk ke fase berikutnya sesuai `planning.md`, sambil tetap mencatat batas fidelity PDF/styles OOXML untuk fase hardening berikutnya.
+
+---
+
+## 2026-06-27 — Fase 1.k Packaging & Rilis (.dmg) (Selesai 100%)
+
+**Dikerjakan oleh:** Antigravity
+
+### Ringkasan
+
+Menyelesaikan tahapan akhir dari Phase 1 (MVP) yaitu melakukan proses kompilasi rilis (Release Build) dan pembungkusan aplikasi menjadi *disk image* installer (`SenovativeWrite.dmg`).
+
+### Perubahan Utama
+
+1. **Build Release**: Menjalankan skrip `./Tools/build.sh` yang mengeksekusi `xcodebuild` dengan konfigurasi `-configuration Release -arch arm64`.
+2. **Ad-Hoc Code Signing**: Build diset agar berjalan mulus secara lokal (dan dapat dibagikan secara ad-hoc tanpa menggunakan Apple Developer Account berbayar). MacOS `codesign` menggunakan pengaturan *Sign to Run Locally* secara otomatis (ad-hoc signing `-s -`).
+3. **Pembuatan `.dmg`**: Menggunakan *tool* `create-dmg` untuk membuat berkas `SenovativeWrite.dmg` dengan tampilan *custom* sederhana, serta `symlink` ke `/Applications`.
+
+### Status Roadmap
+
+✅ **Fase 1.k — Packaging & Rilis SELESAI 100%**
+- Ikon final (atau yang telah ada di AppIcon): Selesai.
+- `build.sh` release arm64: Selesai.
+- `.dmg` terpasang (Ad-Hoc / Unsigned): Selesai.
+- Bisa dirilis tanpa Apple Developer Account: Selesai.
+
+**DENGAN DEMIKIAN, SELURUH RANGKAIAN FASE 1 (MVP) TELAH 100% RAMPUNG! 🎉**
