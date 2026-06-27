@@ -308,6 +308,48 @@ report.docx                     (ZIP)
 - **DoD**: ruler horizontal hanya menutupi lebar kertas, 0 tepat di margin kiri, dan **tetap sejajar dengan kertas pada semua level zoom & saat digulir**; ruler vertikal serupa untuk tinggi halaman/margin atas-bawah.
 - **Risiko**: sinkronisasi ruler dengan `magnification` + multi-halaman (vertikal) bisa rumit; mulai dari ruler horizontal satu halaman, lalu rapikan vertikal/multi-halaman.
 
+**Tambahan dalam 1.n — Hardening hasil review DOCX/MS Word (skill `documents` OpenAI):**
+
+> Review 2026-06-28 terhadap implementasi Fase 1.a–1.k menemukan beberapa gap fidelity yang tidak selalu tertangkap oleh unit test internal karena parser kita toleran. Sekalian dengan kontrol font/ruler/status bar, Fase 1.n harus menjadi titik rapih-rapih sebelum lanjut Slides/Sheets: writer harus lebih patuh skema OOXML, output lebih semantik seperti Word asli, dan `.doc` legacy tidak sekadar round-trip internal.
+
+- **Preservation isi `word/document.xml` (no data loss yang lebih nyata)**:
+  - Saat ini preservation menyalin part tak dikenal, tetapi `word/document.xml` tetap digenerate ulang. Akibatnya elemen unsupported di body dapat hilang saat open→save: `w:bookmarkStart/End`, `w:commentRangeStart/End`, `w:commentReference`, `w:footnoteReference`, `w:endnoteReference`, `w:fldSimple`/field complex, content controls (`w:sdt`), tracked changes (`w:ins`/`w:del`), floating drawing (`wp:anchor`), textbox/shape kompleks, dan TOC.
+  - Target 1.n: minimal buat **unknown-inline/block preservation strategy** untuk elemen yang belum diedit, atau fallback konservatif: bila dokumen mengandung fitur body unsupported, tampilkan warning "Save may simplify unsupported Word features" + tawarkan Save As copy.
+  - Tambah regression test: dokumen fixture dengan bookmark/comment/footnote/field sederhana dibuka lalu disimpan; elemen unsupported yang tidak tersentuh tetap ada di `document.xml`.
+
+- **Semantic Word styles (`styles.xml` + `<w:pStyle>`)**:
+  - `WriteNamedStyle` sekarang hanya flatten ke direct formatting. Secara visual bisa mirip, tetapi Word Navigation Pane, outline, TOC, dan style round-trip tidak berfungsi sebagai heading semantik.
+  - Tambah model `styleId` pada `WriteParagraph` (mis. `Title`, `Heading1`, `Heading2`, `Normal`, `Quote`) dan writer menulis `<w:pPr><w:pStyle w:val="..."/></w:pPr>` dalam urutan CT_PPr yang benar.
+  - Writer harus membuat/patch `word/styles.xml` minimal untuk style bawaan yang kita pakai, sambil tetap preserve style existing dari source package. Direct formatting tetap boleh sebagai fallback, tetapi bukan satu-satunya representasi.
+  - DoD: paragraph dengan Heading 1 tersimpan sebagai `<w:pStyle w:val="Heading1">`, muncul sebagai heading semantik di Word/LibreOffice, dan TOC/outline bisa mengenali struktur.
+
+- **Perbaiki spacing semantics dari Word (`w:spacing`)**:
+  - Parser saat ini menganggap semua `w:line` sebagai twips; padahal `lineRule="auto"` memakai satuan 240 per line (mis. `276` = 1.15). Writer juga selalu menulis `lineRule="exact"`, yang bisa mengubah layout vertikal.
+  - Tambah model line spacing dengan mode: `autoMultiple`, `exact`, `atLeast`; parse/tulis `w:lineRule` sesuai sumber.
+  - Terapkan paragraph defaults dari `styles.xml`/`docDefaults` untuk `spacingAfter` dan line spacing (mis. Word sample `after=200`, `line=276`, `lineRule=auto`) agar fidelity vertikal lebih dekat.
+  - DoD: sample Word asli tetap 2 halaman dan spacing antar heading/list/body tidak drift setelah open→save.
+
+- **Page orientation & section metadata**:
+  - Parser/writer sudah baca/tulis ukuran kertas dan margin, tetapi belum memodelkan `w:orient`. Ini juga prerequisite Fase 1.l Page Setup.
+  - Tambah `orientation` pada `WriteDocumentSection`; parser baca `w:orient`, writer menulis `w:orient="landscape"` saat width/height landscape. Tetap pastikan width/height menjadi sumber kebenaran.
+  - Pertahankan/parse juga header/footer distance (`w:header`, `w:footer`) bila ada, bukan selalu menulis `720`.
+
+- **Table geometry mengikuti section, bukan hardcoded Letter**:
+  - Writer tabel saat ini memakai `9360` dxa (6.5 inch Letter content width). Untuk A4, landscape, Legal, atau margin custom, tabel bisa overflow/tidak sejajar.
+  - Hitung `usableWidthDxa = (pageSize.width - margins.left - margins.right) * 20`, tulis `tblW`, `tblGrid/gridCol`, dan setiap `tcW` dari nilai itu.
+  - Tambahkan `tblInd` eksplisit (default 120 dxa atau 0 sesuai style dokumen) dan pastikan `tblW = sum(gridCol)`; ini mengikuti audit skill `documents` untuk tabel Word yang stabil.
+  - DoD: tabel 1, 2, 3, 5 kolom valid di validator dan tidak overflow di Letter, A4, dan landscape.
+
+- **Legacy `.doc` writer: STSH minimal + verifikasi reader ketat**:
+  - `MSDocWriter` sudah round-trip internal, tetapi belum menulis STSH (`fcStshf/lcbStshf=0`) sehingga MS Word/textutil belum terkonfirmasi bisa membuka hasil tulis dengan benar.
+  - Tambah STSH minimal berisi style built-in seperti Normal + bin-table CHP/PAP yang cukup untuk reader ketat.
+  - DoD: `.doc` hasil Save As bisa dibuka oleh MS Word asli atau minimal `textutil` macOS mengekstrak teks yang benar; test internal saja tidak cukup untuk menandai 1.i benar-benar selesai.
+
+- **Validation/render gate untuk semua perubahan Fase 1.n**:
+  - Setiap perubahan writer `.docx` wajib menjalankan unit test + validator OOXML (`scripts/office/validate.py` dari skill `docx`/dokumen bila tersedia) pada output yang mencakup heading, list, font, table, image, page setup, dan line break.
+  - Render sample dan dokumen sintetis ke PNG memakai workflow skill `documents` (`render_docx.py`) lalu inspeksi visual: tidak ada clipping, overlap, tabel overflow, heading/list drift, atau page break aneh.
+  - Tambah fixture regression kecil di `Tests/Corpus`/`Fixtures` untuk: semantic heading, table custom margin, landscape section, line spacing auto, unsupported body element preservation, dan `.doc` STSH.
+
 ---
 
 ### 🟩 FASE 2 — Senovative Slides (clone PowerPoint) → output `.dmg`
