@@ -369,21 +369,21 @@ public enum WriteNamedStyle: String, CaseIterable, Equatable, Sendable {
             paragraph.spacingAfter = 18
             paragraph.leftIndent = nil
             paragraph.firstLineIndent = nil
-            paragraph.runs = styledRuns(paragraph.runs, fontSize: 28, bold: true)
+            paragraph.runs = styledRuns(paragraph.runs, fontSize: 28, bold: true, textColorHex: "17365D")
         case .heading1:
             paragraph.alignment = .left
             paragraph.spacingBefore = 18
             paragraph.spacingAfter = 8
             paragraph.leftIndent = nil
             paragraph.firstLineIndent = nil
-            paragraph.runs = styledRuns(paragraph.runs, fontSize: 22, bold: true)
+            paragraph.runs = styledRuns(paragraph.runs, fontSize: 22, bold: true, textColorHex: "365F91")
         case .heading2:
             paragraph.alignment = .left
             paragraph.spacingBefore = 14
             paragraph.spacingAfter = 6
             paragraph.leftIndent = nil
             paragraph.firstLineIndent = nil
-            paragraph.runs = styledRuns(paragraph.runs, fontSize: 17, bold: true)
+            paragraph.runs = styledRuns(paragraph.runs, fontSize: 17, bold: true, textColorHex: "365F91")
         case .body:
             paragraph.alignment = .left
             paragraph.lineSpacing = nil

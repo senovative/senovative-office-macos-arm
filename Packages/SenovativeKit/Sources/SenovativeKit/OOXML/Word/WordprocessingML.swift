@@ -65,6 +65,7 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
     private var paragraphListLevel: Int?
     private var paragraphNumberingId: Int?
     private var paragraphPageBreakBefore = false
+    private var paragraphStyleName: String?
 
     init(
         hyperlinkResolver: @escaping (String) -> String? = { _ in nil },
@@ -124,8 +125,13 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             paragraphListLevel = nil
             paragraphNumberingId = nil
             paragraphPageBreakBefore = false
+            paragraphStyleName = nil
         case "pPr":
             inParagraphProperties = true
+        case "pStyle":
+            if inParagraphProperties {
+                paragraphStyleName = attribute(attributeDict, "val")
+            }
         case "jc":
             if inParagraphProperties {
                 paragraphAlignment = alignment(from: attribute(attributeDict, "val"))
@@ -311,7 +317,7 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             }
             inRun = false
         case "p":
-            let paragraph = WriteParagraph(
+            var paragraph = WriteParagraph(
                 runs: currentRuns,
                 alignment: paragraphAlignment,
                 lineSpacing: paragraphLineSpacing,
@@ -322,6 +328,17 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
                 list: listStyle(numberingId: paragraphNumberingId, level: paragraphListLevel),
                 pageBreakBefore: paragraphPageBreakBefore
             )
+            if let style = paragraphStyleName {
+                if style.contains("Title") {
+                    paragraph = WriteNamedStyle.title.applying(to: paragraph)
+                } else if style.contains("Heading1") {
+                    paragraph = WriteNamedStyle.heading1.applying(to: paragraph)
+                } else if style.contains("Heading2") {
+                    paragraph = WriteNamedStyle.heading2.applying(to: paragraph)
+                } else if style.contains("Quote") || style.contains("quote") {
+                    paragraph = WriteNamedStyle.quote.applying(to: paragraph)
+                }
+            }
             if inCell {
                 currentCellParagraphs.append(paragraph)
             } else {

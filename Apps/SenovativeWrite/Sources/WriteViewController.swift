@@ -178,9 +178,11 @@ private struct DocumentCanvas: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = true
         textView.isGrammarCheckingEnabled = true
         textView.isAutomaticSpellingCorrectionEnabled = true
+        textView.usesAdaptiveColorMappingForDarkAppearance = false
         textView.drawsBackground = true
-        textView.backgroundColor = .textBackgroundColor
-        textView.textColor = .labelColor
+        textView.backgroundColor = .white
+        textView.textColor = .black
+        textView.insertionPointColor = .black
         textView.font = WriteAttributedStringBridge.defaultFont
         textView.delegate = context.coordinator
 
@@ -188,30 +190,33 @@ private struct DocumentCanvas: NSViewRepresentable {
         let margins = state.model.section.margins
         let pageGap: CGFloat = 40
 
-        textView.textContainerInset = NSSize(width: margins.left, height: margins.top)
+        textView.textContainerInset = .zero
 
-        textView.minSize = NSSize(width: pageSize.width, height: pageSize.height)
-        textView.maxSize = NSSize(width: pageSize.width, height: CGFloat.greatestFiniteMagnitude)
+        let textWidth = pageSize.width - margins.left - margins.right
+        textView.minSize = NSSize(width: textWidth, height: pageSize.height)
+        textView.maxSize = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.frame = NSRect(x: 0, y: 0, width: pageSize.width, height: pageSize.height)
-        textView.textContainer?.size = NSSize(width: pageSize.width, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainer?.widthTracksTextView = false
+        textView.frame = NSRect(x: 0, y: 0, width: textWidth, height: pageSize.height)
+        textView.textContainer?.size = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
 
         // Transparent background, PageContainerView will draw the pages
         textView.drawsBackground = false
         textView.backgroundColor = .clear
 
-        // Add exclusion paths for gaps between pages
+        // Add exclusion paths for gaps between pages (including top and bottom margins)
         var paths: [NSBezierPath] = []
         for i in 1...500 {
-            let gapRect = NSRect(x: 0, y: CGFloat(i) * pageSize.height + CGFloat(i - 1) * pageGap, width: pageSize.width, height: pageGap)
+            let gapY = CGFloat(i) * pageSize.height + CGFloat(i - 1) * pageGap - margins.bottom - margins.top
+            let gapHeight = margins.bottom + pageGap + margins.top
+            let gapRect = NSRect(x: 0, y: gapY, width: textWidth, height: gapHeight)
             paths.append(NSBezierPath(rect: gapRect))
         }
         textView.textContainer?.exclusionPaths = paths
 
         let nsPageSize = NSSize(width: pageSize.width, height: pageSize.height)
-        let containerView = PageContainerView(textView: textView, pageSize: nsPageSize, pageGap: pageGap)
+        let containerView = PageContainerView(textView: textView, pageSize: nsPageSize, margins: margins, pageGap: pageGap)
         scrollView.documentView = containerView
         context.coordinator.textView = textView
         context.coordinator.loadFromModel()
@@ -267,7 +272,7 @@ private enum WriteAttributedStringBridge {
     static var defaultFont: NSFont { .systemFont(ofSize: defaultFontSize) }
 
     static var defaultTypingAttributes: [NSAttributedString.Key: Any] {
-        [.font: defaultFont, .foregroundColor: NSColor.labelColor]
+        [.font: defaultFont, .foregroundColor: NSColor.black]
     }
 
     static func attributedString(from model: WriteDocumentModel) -> NSAttributedString {
@@ -473,7 +478,7 @@ private enum WriteAttributedStringBridge {
 
         var attrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: nsColor(hex: run.textColorHex) ?? NSColor.labelColor,
+            .foregroundColor: nsColor(hex: run.textColorHex) ?? NSColor.black,
         ]
         if run.underline {
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
@@ -1009,7 +1014,7 @@ final class RichTextView: NSTextView {
         if let color = spec.color {
             storage.addAttribute(.foregroundColor, value: color, range: range)
         } else {
-            storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+            storage.addAttribute(.foregroundColor, value: NSColor.black, range: range)
         }
     }
 
@@ -1058,17 +1063,19 @@ final class RichTextView: NSTextView {
     }
 
     private func characterStyleSpec(_ style: WriteNamedStyle) -> (size: CGFloat?, bold: Bool, italic: Bool, color: NSColor?) {
+        let titleBlue = NSColor(srgbRed: 0x17/255.0, green: 0x36/255.0, blue: 0x5D/255.0, alpha: 1.0)
+        let headingBlue = NSColor(srgbRed: 0x36/255.0, green: 0x5F/255.0, blue: 0x91/255.0, alpha: 1.0)
         switch style {
         case .title:
-            (28, true, false, nil)
+            return (28, true, false, titleBlue)
         case .heading1:
-            (22, true, false, nil)
+            return (22, true, false, headingBlue)
         case .heading2:
-            (17, true, false, nil)
+            return (17, true, false, headingBlue)
         case .body:
-            (15, false, false, nil)
+            return (15, false, false, nil)
         case .quote:
-            (15, false, true, NSColor.secondaryLabelColor)
+            return (15, false, true, NSColor.darkGray)
         }
     }
 
@@ -1244,13 +1251,15 @@ private final class FindReplacePanelController: NSWindowController {
 private final class PageContainerView: NSView {
     let textView: NSTextView
     let pageSize: NSSize
+    let margins: WriteEdgeInsets
     let pageGap: CGFloat
     let horizontalPadding: CGFloat = 40
     let verticalPadding: CGFloat = 40
 
-    init(textView: NSTextView, pageSize: NSSize, pageGap: CGFloat) {
+    init(textView: NSTextView, pageSize: NSSize, margins: WriteEdgeInsets, pageGap: CGFloat) {
         self.textView = textView
         self.pageSize = pageSize
+        self.margins = margins
         self.pageGap = pageGap
         super.init(frame: .zero)
         addSubview(textView)
@@ -1262,8 +1271,8 @@ private final class PageContainerView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func textViewFrameChanged() {
-        let minWidth = textView.frame.width + horizontalPadding * 2
-        let minHeight = textView.frame.height + verticalPadding * 2
+        let minWidth = pageSize.width + horizontalPadding * 2
+        let minHeight = textView.frame.maxY + verticalPadding + CGFloat(margins.bottom)
         
         let targetWidth = max(minWidth, superview?.frame.width ?? minWidth)
         let targetHeight = max(minHeight, superview?.frame.height ?? minHeight)
@@ -1289,8 +1298,8 @@ private final class PageContainerView: NSView {
 
     override func layout() {
         super.layout()
-        let x = max(horizontalPadding, (bounds.width - textView.frame.width) / 2)
-        textView.frame.origin = NSPoint(x: x, y: verticalPadding)
+        let pageX = max(horizontalPadding, (bounds.width - pageSize.width) / 2)
+        textView.frame.origin = NSPoint(x: pageX + CGFloat(margins.left), y: verticalPadding + CGFloat(margins.top))
     }
     
     override func draw(_ dirtyRect: NSRect) {
@@ -1317,7 +1326,7 @@ private final class PageContainerView: NSView {
             if pageRect.intersects(dirtyRect) {
                 NSGraphicsContext.saveGraphicsState()
                 shadow.set()
-                NSColor.textBackgroundColor.setFill()
+                NSColor.white.setFill()
                 pageRect.fill()
                 NSGraphicsContext.restoreGraphicsState()
                 

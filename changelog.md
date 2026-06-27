@@ -919,3 +919,28 @@ Menyelesaikan tahapan akhir dari Phase 1 (MVP) yaitu melakukan proses kompilasi 
 - Bisa dirilis tanpa Apple Developer Account: Selesai.
 
 **DENGAN DEMIKIAN, SELURUH RANGKAIAN FASE 1 (MVP) TELAH 100% RAMPUNG! 🎉**
+
+---
+
+## 2026-06-27 — Bugfix: Kompatibilitas Warna Tema Lama MS Word & Paginasi (Belum Selesai 100% - Bug Paginasi Masih Terjadi)
+
+**Dikerjakan oleh:** Antigravity
+
+### Ringkasan
+
+Memperbaiki *regresi* visual (*bugfix*) terkait palet warna pada dokumen yang berjalan dalam mode **Compatibility Mode** (mewarisi format/template bawaan Microsoft Word 2007-2010). Selain itu, terdapat upaya perbaikan pada sistem tata letak (layout engine) terkait margin dan spasi *page break* untuk mereplikasi visual dokumen cetak secara persis seperti di Microsoft Word, namun perbaikan tata letak ini belum sepenuhnya berhasil memecahkan *bug*.
+
+### Perubahan Utama
+
+- **Koreksi Warna Heading / Styles (`WriteViewController.swift`)**:
+  - Mengubah kode warna fallback untuk Preset Style: `Title` (`#17365D`) dan `Heading 1` / `Heading 2` (`#365F91`). Warna ini mereplika secara presisi spesifikasi XML dari tema *legacy* MS Word 2007-2010. Ini memperbaiki keluhan di mana teks judul pada dokumen sampel yang berada dalam **Compatibility Mode** tampak menghitam karena tidak cocok dengan *fallback* warna Word modern (`#2F5496`).
+  
+- **Perombakan Layout Paginasi Kertas (`WriteViewController.swift`)**:
+  - `NSTextView` sebelumnya mengalami masalah pemotongan teks pada batas bawah halaman (`pageSize.height`).
+  - Mengubah titik mulai (`origin`) teks agar menggunakan kombinasi `verticalPadding + margins.top`.
+  - Mengubah titik eksklusi (`exclusionPaths`) pada TextKit 2, yang sekarang tidak hanya menahan batas bawah teks, tapi mengalkulasi batas margin bawah (`margins.bottom`), spasi visual celah kertas putih (`pageGap`), dan margin atas kertas baru (`margins.top`).
+  - Efeknya: teks tidak lagi mepet hingga bibir kertas, melainkan selalu menyisakan jarak putih (margin atas/bawah) sekitar 1 inci (ekuivalen 1440 *twips*) sesuai konfigurasi dokumen aslinya.
+
+- **Re-Packaging**:
+  - Melakukan kompilasi ulang Ad-Hoc dan memperbarui *installer* `SenovativeWrite.dmg`.
+
