@@ -345,6 +345,18 @@ report.docx                     (ZIP)
   - Tambah STSH minimal berisi style built-in seperti Normal + bin-table CHP/PAP yang cukup untuk reader ketat.
   - DoD: `.doc` hasil Save As bisa dibuka oleh MS Word asli atau minimal `textutil` macOS mengekstrak teks yang benar; test internal saja tidak cukup untuk menandai 1.i benar-benar selesai.
 
+- **Performa Editor Inkremental (O(N) Bottleneck)**:
+  - Saat ini, setiap ketikan (`textDidChange`) memicu parsing ulang seluruh dokumen dari `NSTextStorage` ke `WriteDocumentModel`. Ini sangat lambat (O(N)) untuk dokumen besar.
+  - Terapkan update inkremental (hanya memperbarui paragraf yang diedit) atau jadikan `NSTextStorage` sumber kebenaran tunggal selama sesi pengeditan.
+
+- **Arsitektur Paginasi Multi-Container (Hapus Hack TextKit 1)**:
+  - Penggunaan `exclusionPaths` untuk membuat batas antar halaman adalah hack yang rapuh dan mengunci aplikasi ke TextKit 1 dengan batas statis 500 halaman.
+  - Rombak `PageContainerView` menggunakan arsitektur multi-`NSTextContainer` (satu container per halaman fisik) sehingga pemecahan halaman terjadi secara alami tanpa trik margin.
+
+- **Tabel Kompleks & Merge Cells (`vMerge` / `gridSpan`)**:
+  - Tabel saat ini tidak mendukung penggabungan sel vertikal maupun horizontal. File `.docx` dengan tabel kompleks akan rusak saat dirender/disimpan.
+  - Tambahkan `columnSpan` dan `rowSpan` pada `WriteTableCell`, lalu pastikan parser membaca `<w:gridSpan>` dan `<w:vMerge>` dari `<w:tcPr>`.
+
 - **Validation/render gate untuk semua perubahan Fase 1.n**:
   - Setiap perubahan writer `.docx` wajib menjalankan unit test + validator OOXML (`scripts/office/validate.py` dari skill `docx`/dokumen bila tersedia) pada output yang mencakup heading, list, font, table, image, page setup, dan line break.
   - Render sample dan dokumen sintetis ke PNG memakai workflow skill `documents` (`render_docx.py`) lalu inspeksi visual: tidak ada clipping, overlap, tabel overflow, heading/list drift, atau page break aneh.
