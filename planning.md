@@ -144,6 +144,7 @@ report.docx                     (ZIP)
 | **1.k** | **Packaging & Rilis** | Ikon final, `build.sh` release arm64, **`SenovativeWrite.dmg`** (background + symlink /Applications), unsigned dulu (signing/notarisasi menyusul saat akun Apple Developer siap) | `.dmg` terpasang & jalan di Mac M-series lain |
 | **1.l** | **Page Setup** | Dialog Page Setup (ukuran kertas, orientasi, margin, scaling) yang mengedit `WriteDocumentSection`, re-layout kanvas live, dan round-trip ke `<w:sectPr>` | Ubah kertas/orientasi/margin via dialog → kanvas & cetak ikut berubah, tersimpan benar di `.docx` & terbuka sesuai di Word |
 | **1.m** | **Zoom In/Out** | Kontrol zoom tampilan kanvas (slider − / + + persen) di status bar ala Word, menu View → Zoom, dan gesture pinch/⌘-scroll | Perbesar/perkecil tampilan halaman tanpa mengubah isi dokumen; persen akurat, caret/scroll tetap benar |
+| **1.n** | **Font Family & Size (ribbon) + Indikator Halaman + Ruler** | Combo box **nama font** (theme/recent/all fonts, live preview) + **ukuran font** (preset list, editable) + grow/shrink di ribbon ala Word; **indikator "Page X of Y"** di status bar; **ruler selebar kertas & zoom-aware** (0 di margin, ikut skala/scroll) | Font & ukuran round-trip `<w:rFonts>`/`<w:sz>`; status bar tampil halaman aktif/total; ruler hanya menutupi kertas, 0 di margin kiri, tetap sejajar kertas di semua level zoom |
 
 **Milestone Fase 1:** `SenovativeWrite.dmg` rilis-able yang baca/tulis **`.docx` & `.doc`** asli.
 
@@ -226,6 +227,68 @@ report.docx                     (ZIP)
 - `NSScrollView.magnification` berlaku pada `documentView` (`PageContainerView`) — pastikan ruler & exclusion-path pagination tetap konsisten setelah skala (uji di 50% & 200%).
 - Hindari mengubah font/`pointSize` model untuk "zoom" — itu mengubah dokumen, bukan tampilan; pemisahan zoom (tampilan) vs ukuran kertas (Fase 1.l) harus jelas.
 - Zoom adalah **per-window/preferensi**, jadi tidak memicu "edited"/`updateChangeCount` kecuali memang menulis `w:zoom`.
+
+---
+
+#### 🟦 Fase 1.n — Font Family & Size di Ribbon (detail)
+
+> Fitur tambahan pasca-1.m. Tujuan: kontrol **nama font** dan **ukuran font** langsung di ribbon (seperti grup Font di tab Home MS Word), bukan lewat Font Panel macOS. Fondasi sudah ada: `WriteRun.fontFamily` & `WriteRun.fontSize` tersimpan di model dan round-trip ke `<w:rFonts>`/`<w:sz>`; resolusi theme font (`majorHAnsi`/`minorHAnsi` → Calibri/Cambria) sudah ada dari fase fidelity. Fase ini menambah **UI inline** + apply ke selection/typing dan refleksi dua-arah.
+
+**Lingkup UI (mengacu grup Font Word):**
+
+| Kontrol | Perilaku | Catatan |
+|---|---|---|
+| **Combo box nama font** | Editable + dropdown; apply ke teks terpilih / typing attributes | Isi dropdown: **Theme Fonts** (Calibri *(Headings)*, Cambria *(Body)*), **Recent Fonts**, **All Fonts** (daftar `NSFontManager.availableFontFamilies`). |
+| **Live preview di menu** | Tiap nama font dirender memakai font-nya sendiri | Seperti Word; pakai atribut font per item menu. |
+| **Combo box ukuran** | Editable + preset dropdown | Preset: **5, 5.5, 6.5, 7.5, 8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72**. Boleh ketik nilai bebas. |
+| **Grow / Shrink (A▲ / A▼)** | Naik/turun ke preset berikutnya | Shortcut `⌘+>` / `⌘+<` ala Word. |
+| **Refleksi caret** | Saat caret/seleksi pindah, combo box menampilkan font & ukuran aktif | Jika seleksi campur → field kosong/placeholder. |
+
+**Pendekatan implementasi:**
+
+1. **UI**: dua kontrol di ribbon (`SenovativeUI`/`WriteViewController`) — bisa `NSComboBox` (editable) yang di-host, atau menu SwiftUI. Dropdown font perlu item dengan **preview** (render nama dalam font tsb).
+2. **Daftar font**: `NSFontManager.shared.availableFontFamilies`; bagian **Theme Fonts** dari section/theme dokumen (Headings=majorHAnsi, Body=minorHAnsi); **Recent** disimpan di preferensi.
+3. **Apply**: ubah font pada `selectedRange` di `NSTextStorage` (pakai `NSFontManager.convert` untuk pertahankan bold/italic) atau set `typingAttributes` saat tak ada seleksi; lalu `didChangeText()` → model & `<w:rFonts>`/`<w:sz>` ikut.
+4. **Refleksi dua-arah**: pada `NSTextViewDelegate.textViewDidChangeSelection`, baca atribut font/ukuran di caret → update combo box (tangani seleksi multi-font → tampil kosong).
+5. **Ukuran**: preset list di atas, plus parsing input bebas (validasi rentang, mis. 1–1638pt seperti Word). Grow/Shrink melompat ke preset terdekat berikutnya.
+6. **Konsistensi**: kontrol Font Panel lama (tombol "Fonts") boleh tetap ada sebagai pelengkap, tapi ribbon jadi jalur utama.
+
+**Definition of Done:**
+- Memilih nama font & ukuran dari ribbon mengubah teks terpilih (atau typing berikutnya); bold/italic yang ada tetap dipertahankan.
+- Combo box **memantulkan** font & ukuran pada posisi caret; seleksi campur ditandai (field kosong).
+- Perubahan tersimpan ke `.docx` (`<w:rFonts w:ascii=…>`, `<w:sz w:val=…>`) dan terbuka sesuai di Word.
+
+**Catatan teknis & risiko:**
+- `<w:sz>` memakai **half-point** (mis. 11pt → `w:val="22"`); ukuran pecahan (10.5) → `21`. Pastikan konversi half-point sudah benar di writer (cek juga 10.5/5.5/6.5/7.5).
+- Theme Fonts harus tetap **resolve** ke typeface konkret saat disimpan (jangan bocorkan token tema) — sudah ditangani di fase fidelity; verifikasi saat user memilih "Calibri (Headings)".
+- Font yang belum ter-install (ikon cloud di Word) di luar lingkup — cukup tampilkan font yang tersedia di sistem.
+
+**Tambahan dalam 1.n — Indikator Halaman ("Page X of Y"):**
+
+> Menampilkan **halaman aktif dari total halaman** di status bar (kiri-bawah ala Word, mis. "Page 2 of 2"). Murni indikator tampilan; tidak mengubah dokumen.
+
+- **Total halaman**: dihitung dari pagination kanvas. Saat ini pagination memakai `exclusionPaths` (tinggi konten ÷ tinggi halaman efektif) — total = jumlah lembar yang benar-benar ditempati teks. Harus **konsisten** dengan lembar yang dirender (bukan asumsi 500 path statis).
+- **Halaman aktif**: dari posisi scroll viewport (lembar yang sedang terlihat dominan) atau posisi caret; pilih salah satu konvensi (Word: berbasis caret saat mengetik, berbasis scroll saat menggulir).
+- **Update**: pada edit (`textDidChange`), scroll (`NSView.boundsDidChangeNotification` pada clip view), dan `selectionDidChange`.
+- **UI**: label di status bar `WriteViewController` (sebelah word/char count yang sudah ada); format ter-lokalisasi `String(localized: "Page \(current) of \(total)")`.
+- **DoD**: status bar menampilkan "Page X of Y" yang berubah benar saat mengetik/scroll; total cocok dengan jumlah halaman tercetak (uji dokumen 1, 2, dan banyak halaman).
+- **Risiko**: akurasi bergantung pada pagination `exclusionPaths` (lihat catatan changelog) — jika kelak pindah ke arsitektur multi-`NSTextContainer`, hitung total dari jumlah container yang terpakai.
+
+**Tambahan dalam 1.n — Perbaikan Ruler (selebar kertas + zoom-aware):**
+
+> Masalah sekarang: ruler memakai `NSScrollView` bawaan yang membentang **selebar window** (termasuk area gelap di luar kertas), dengan nol di tepi kiri view. Target ala Word: ruler **hanya menutupi area kertas**, dengan **0 di margin kiri**, batas margin/indent ditandai, dan **mengikuti posisi & skala kertas** saat di-zoom atau digulir.
+
+- **Lingkup ruler kertas**:
+  - Skala (angka) hanya digambar **sepanjang lebar kertas** (`pageSize.width`), bukan seluruh lebar window; area di luar kertas tampil kosong/redup.
+  - **Origin di margin**: titik 0 berada di **margin kiri** halaman (mengikuti konvensi Word), bukan di tepi fisik kertas.
+  - Tandai **batas margin** (area abu di luar margin) dan, menyusul, **penanda indent** (first-line/hanging/left) + tab stops yang bisa digeser.
+- **Keterkaitan zoom (1.m)**: ruler harus **sinkron dengan `NSScrollView.magnification`** dan offset scroll horizontal — saat zoom in/out, jarak antar-angka & posisi kertas berubah, ruler ikut menyesuaikan sehingga angka tetap sejajar dengan posisi kertas sebenarnya. (Penyebab utama "ruler tidak nyambung dengan kertas" = ruler tak ikut transform zoom/scroll.)
+- **Pendekatan implementasi**:
+  - Opsi (a): subclass **`NSRulerView`** custom — set `clientView` = `PageContainerView`, `originOffset` = posisi margin-kiri kertas relatif client, `measurementUnits`, dan gambar hanya rentang kertas. `NSRulerView` sudah terintegrasi dengan scroll & magnification scroll view.
+  - Opsi (b): ruler custom (`NSView`) yang menggambar sendiri berdasarkan geometri `PageContainerView` + `magnification` + `contentView.bounds.origin`. Lebih banyak kerja tapi kontrol penuh tampilan ala Word.
+  - Rekomendasi: mulai dari (a) `NSRulerView` dengan `originOffset` ke margin & batasi gambar ke lebar kertas; tingkatkan ke penanda indent/tab kemudian.
+- **DoD**: ruler horizontal hanya menutupi lebar kertas, 0 tepat di margin kiri, dan **tetap sejajar dengan kertas pada semua level zoom & saat digulir**; ruler vertikal serupa untuk tinggi halaman/margin atas-bawah.
+- **Risiko**: sinkronisasi ruler dengan `magnification` + multi-halaman (vertikal) bisa rumit; mulai dari ruler horizontal satu halaman, lalu rapikan vertikal/multi-halaman.
 
 ---
 
