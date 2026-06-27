@@ -21,11 +21,17 @@ final class WriteDocument: NSDocument {
     }
 
     override func read(from data: Data, ofType typeName: String) throws {
-        guard typeName == OfficeFileType.docx.contentTypeIdentifier else {
+        let parsed: WriteDocumentModel
+        if typeName == OfficeFileType.docx.contentTypeIdentifier {
+            parsed = try OOXMLEngine.readWord(from: data)
+        } else if typeName == OfficeFileType.doc.contentTypeIdentifier {
+            let archive = try CFBArchive(data: data)
+            let parser = try MSDocParser(archive: archive)
+            parsed = try parser.parse()
+        } else {
             throw SenovativeDocumentError.unsupportedFormat(typeName)
         }
 
-        let parsed = try OOXMLEngine.readWord(from: data)
         let name = fileURL?.lastPathComponent ?? String(localized: "Document")
         var model = parsed
         model.title = name

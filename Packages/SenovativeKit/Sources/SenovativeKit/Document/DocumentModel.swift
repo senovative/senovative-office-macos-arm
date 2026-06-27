@@ -28,4 +28,10 @@ public extension OfficeFileType {
         contentTypeIdentifier: "org.openxmlformats.wordprocessingml.document",
         kind: .write
     )
+    
+    static let doc = OfficeFileType(
+        filenameExtension: "doc",
+        contentTypeIdentifier: "com.microsoft.word.doc",
+        kind: .write
+    )
 }
