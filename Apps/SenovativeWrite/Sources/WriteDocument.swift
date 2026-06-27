@@ -27,7 +27,8 @@ final class WriteDocument: NSDocument {
 
         let parsed = try OOXMLEngine.readWord(from: data)
         let name = fileURL?.lastPathComponent ?? String(localized: "Document")
-        let model = WriteDocumentModel(title: name, paragraphs: parsed.paragraphs)
+        var model = parsed
+        model.title = name
         state.loadModel(model, status: String(localized: "Opened \(name)"))
     }
 

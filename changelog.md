@@ -639,3 +639,67 @@ Melengkapi Fase 1.f dengan **gambar inline** (`word/media/` + `<w:drawing>`/`a:b
 - Special character (tab): selesai.
 
 Berikutnya: **Fase 1.g — Fidelity & Robustness OOXML** (uji `.docx` dunia nyata dari Word/Google Docs, **round-trip preservation** part tak dikenal supaya tak ada data loss, penanganan error, fonts).
+
+---
+
+## 2026-06-27 — Fase 1.g Fidelity & Robustness OOXML (Fondasi Preservation Selesai)
+
+**Dikerjakan oleh:** Codex CLI
+
+### Ringkasan
+
+Mengerjakan fondasi **round-trip preservation** untuk paket `.docx`: part OOXML yang belum dipahami editor sekarang disimpan sebagai snapshot saat import, lalu disalin kembali saat export. Engine juga mulai punya guardrail ukuran file/part dan merge konservatif untuk registry/relationship penting supaya metadata, styles, relasi root, dan relasi dokumen tidak hilang saat dokumen diedit ringan.
+
+### Perubahan Utama
+
+- **Model dokumen** (`WriteDocumentModel.swift`):
+  - Menambahkan `OOXMLPackageSnapshot` berisi map `part path -> Data`.
+  - `WriteDocumentModel` sekarang membawa `sourcePackage` opsional agar dokumen hasil import bisa menyimpan paket OOXML asal.
+
+- **Archive OOXML** (`OOXMLArchive.swift`):
+  - Menambahkan enumerasi `partPaths`.
+  - Menambahkan `readAllParts(maxPartSize:)` untuk snapshot seluruh part file ZIP dengan batas ukuran per part.
+
+- **Engine OOXML** (`OOXMLEngine.swift`):
+  - `readWord` menolak paket terlalu besar dan mengambil snapshot seluruh part asal.
+  - `writeWord` menyalin part tak dikenal dari `sourcePackage`, tetapi tetap mengganti part yang memang dihasilkan ulang oleh editor.
+  - Merge `[Content_Types].xml`, `_rels/.rels`, dan `word/_rels/document.xml.rels` agar override/default/relationship lama tetap ada dan relationship baru tetap tertulis.
+  - Merge `.rels` memakai parser XML untuk menghindari duplicate ID saat ada konflik dengan relationship yang digenerate ulang.
+  - Menambahkan batas awal: paket maksimal 200 MB, part maksimal 50 MB.
+
+- **App bridge**:
+  - `WriteDocument.read` tidak lagi membangun ulang model dari paragraf saja; sekarang mempertahankan blocks, section, dan `sourcePackage` hasil parser.
+  - `WriteAttributedStringBridge.model(from:)` sekarang mempertahankan `section` dan `sourcePackage` dari model sebelumnya saat pengguna mengedit isi dokumen.
+
+- **Test** (`SenovativeKitTests.swift`):
+  - Test round-trip preservation untuk unknown parts seperti `word/styles.xml` dan `docProps/core.xml`.
+  - Test preservation content types dan root relationships.
+  - Test preservation relationship dokumen tak dikenal sekaligus memastikan hyperlink baru tetap dibuat.
+
+### Verifikasi Build & Test
+
+- `swift test` (SenovativeKit): **13 test lulus**.
+- `swift test` (SenovativeUI): **1 test lulus**.
+- `xcodebuild -workspace SenovativeOffice.xcworkspace -scheme SenovativeWrite -configuration Debug -arch arm64 -derivedDataPath build -quiet build`: **lulus**.
+- `./Tools/build.sh` (release arm64): **`** BUILD SUCCEEDED **`**.
+- Binary release: `Mach-O 64-bit executable arm64`.
+- `codesign --verify --deep --strict --verbose=2`: **valid on disk** dan memenuhi designated requirement.
+
+### Catatan Teknis Untuk Agen Berikutnya
+
+- Preservation fase ini adalah **copy-through** unknown package parts + merge registry/relationship, bukan semantic support penuh untuk semua fitur OOXML.
+- Merge `[Content_Types].xml` masih konservatif berbasis baris/string; cukup untuk kasus tested, tetapi layak diganti parser XML penuh jika fidelity makin diperluas.
+- Belum ada corpus `.docx` dunia nyata dari Word/LibreOffice/Google Docs/Pages. Ini masih perlu untuk memvalidasi kompatibilitas lintas aplikasi.
+- Belum ada fuzz/corrupt-file test khusus selain guard ukuran paket/part.
+- Header/footer/media/relationship kompleks masih perlu diuji dengan dokumen nyata karena preservation menyalin part, tetapi editor belum memahami semua semantic relationship di luar body utama.
+
+### Status Roadmap
+
+✅ **Fase 1.g — fondasi fidelity/robustness OOXML selesai**
+- Unknown package parts: preserved.
+- Content types/root rels/document rels: merged.
+- Source package snapshot: preserved melewati siklus edit editor.
+- Guard ukuran paket/part: ada.
+- Test unit untuk preservation utama: ada.
+
+Berikutnya: lanjutkan Fase 1.g dengan **corpus dokumen nyata**, corrupt/fuzz tests, full XML parser untuk content-types merge, serta verifikasi manual buka-simpan-buka di Word/LibreOffice/Pages.

@@ -243,21 +243,48 @@ public struct WriteDocumentSection: Equatable, Sendable {
     }
 }
 
+/// Original OOXML package parts carried through editing so unsupported parts can
+/// survive save operations instead of being silently dropped.
+public struct OOXMLPackageSnapshot: Equatable, Sendable {
+    public var parts: [String: Data]
+
+    public init(parts: [String: Data] = [:]) {
+        self.parts = parts
+    }
+}
+
 public struct WriteDocumentModel: OfficeDocumentModel {
     public var title: String
     /// The document body in order: paragraphs and tables interleaved.
     public var blocks: [WriteBlock]
     public var section: WriteDocumentSection
+    public var sourcePackage: OOXMLPackageSnapshot?
 
-    public init(title: String, blocks: [WriteBlock], section: WriteDocumentSection = WriteDocumentSection()) {
+    public init(
+        title: String,
+        blocks: [WriteBlock],
+        section: WriteDocumentSection = WriteDocumentSection(),
+        sourcePackage: OOXMLPackageSnapshot? = nil
+    ) {
         self.title = title
         self.blocks = blocks
         self.section = section
+        self.sourcePackage = sourcePackage
     }
 
     /// Convenience for paragraph-only content (no tables).
-    public init(title: String, paragraphs: [WriteParagraph], section: WriteDocumentSection = WriteDocumentSection()) {
-        self.init(title: title, blocks: paragraphs.map(WriteBlock.paragraph), section: section)
+    public init(
+        title: String,
+        paragraphs: [WriteParagraph],
+        section: WriteDocumentSection = WriteDocumentSection(),
+        sourcePackage: OOXMLPackageSnapshot? = nil
+    ) {
+        self.init(
+            title: title,
+            blocks: paragraphs.map(WriteBlock.paragraph),
+            section: section,
+            sourcePackage: sourcePackage
+        )
     }
 
     /// Convenience for plain-text content: splits on newlines into single

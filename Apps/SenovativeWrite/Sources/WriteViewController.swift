@@ -214,7 +214,7 @@ private struct DocumentCanvas: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard !isLoading, let storage = textView?.textStorage else { return }
-            let model = WriteAttributedStringBridge.model(from: storage, title: state.model.title)
+            let model = WriteAttributedStringBridge.model(from: storage, previousModel: state.model)
             state.model = model
             state.document?.updateChangeCount(.changeDone)
         }
@@ -303,9 +303,14 @@ private enum WriteAttributedStringBridge {
         }
     }
 
-    static func model(from attributed: NSAttributedString, title: String) -> WriteDocumentModel {
+    static func model(from attributed: NSAttributedString, previousModel: WriteDocumentModel) -> WriteDocumentModel {
         if attributed.length == 0 {
-            return WriteDocumentModel(title: title, paragraphs: [WriteParagraph()])
+            return WriteDocumentModel(
+                title: previousModel.title,
+                paragraphs: [WriteParagraph()],
+                section: previousModel.section,
+                sourcePackage: previousModel.sourcePackage
+            )
         }
 
         // 1. Split into paragraph entries, capturing table membership.
@@ -350,7 +355,12 @@ private enum WriteAttributedStringBridge {
         flush()
 
         if blocks.isEmpty { blocks = [.paragraph(WriteParagraph())] }
-        return WriteDocumentModel(title: title, blocks: blocks)
+        return WriteDocumentModel(
+            title: previousModel.title,
+            blocks: blocks,
+            section: previousModel.section,
+            sourcePackage: previousModel.sourcePackage
+        )
     }
 
     private static func tableBlock(in style: NSParagraphStyle) -> NSTextTableBlock? {

@@ -256,3 +256,111 @@ private let onePixelPNG = Data([
     #expect(Int(parsedShape.height.rounded()) == 60)
     #expect(parsedShape.fillColorHex == "FF8800")
 }
+
+@Test func ooxmlRoundTripPreservesUnknownPartsAndPackageRelationships() throws {
+    let base = try OOXMLEngine.writeWord(model: WriteDocumentModel(title: "Base", paragraphs: [
+        WriteParagraph(runs: [WriteRun(text: "Keep known body")]),
+    ]))
+
+    let source = try OOXMLArchive(data: base)
+    let archive = try OOXMLArchive(mode: .create)
+    for path in source.partPaths {
+        if let data = try source.readPart(path: path), path != "[Content_Types].xml", path != "_rels/.rels" {
+            try archive.writePart(path: path, data: data)
+        }
+    }
+
+    let contentTypes = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+        <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+        <Default Extension="xml" ContentType="application/xml"/>
+        <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+        <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+        <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+    </Types>
+    """
+    let rootRels = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+        <Relationship Id="rIdCore" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+    </Relationships>
+    """
+    let styles = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:style w:type="paragraph" w:styleId="CustomStyle"/>
+    </w:styles>
+    """
+    let core = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"/>
+    """
+
+    try archive.writePart(path: "[Content_Types].xml", data: Data(contentTypes.utf8))
+    try archive.writePart(path: "_rels/.rels", data: Data(rootRels.utf8))
+    try archive.writePart(path: "word/styles.xml", data: Data(styles.utf8))
+    try archive.writePart(path: "docProps/core.xml", data: Data(core.utf8))
+
+    var model = try OOXMLEngine.readWord(from: archive.data)
+    model.blocks = [.paragraph(WriteParagraph(runs: [WriteRun(text: "Edited body")]))]
+    let saved = try OOXMLEngine.writeWord(model: model)
+    let savedArchive = try OOXMLArchive(data: saved)
+
+    #expect(try savedArchive.readPart(path: "word/styles.xml") == Data(styles.utf8))
+    #expect(try savedArchive.readPart(path: "docProps/core.xml") == Data(core.utf8))
+
+    let savedContentTypesData = try #require(try savedArchive.readPart(path: "[Content_Types].xml"))
+    let savedContentTypes = String(data: savedContentTypesData, encoding: .utf8)
+    #expect(savedContentTypes?.contains("/word/styles.xml") == true)
+    #expect(savedContentTypes?.contains("/docProps/core.xml") == true)
+
+    let savedRootRelsData = try #require(try savedArchive.readPart(path: "_rels/.rels"))
+    let savedRootRels = String(data: savedRootRelsData, encoding: .utf8)
+    #expect(savedRootRels?.contains("rIdCore") == true)
+    #expect(savedRootRels?.contains("docProps/core.xml") == true)
+
+    let reparsed = try OOXMLEngine.readWord(from: saved)
+    #expect(reparsed.plainText == "Edited body")
+}
+
+@Test func ooxmlRoundTripPreservesUnknownDocumentRelationships() throws {
+    let base = try OOXMLEngine.writeWord(model: WriteDocumentModel(title: "Base", paragraphs: [
+        WriteParagraph(runs: [WriteRun(text: "Has rels")]),
+    ]))
+    let source = try OOXMLArchive(data: base)
+    let archive = try OOXMLArchive(mode: .create)
+    for path in source.partPaths {
+        if let data = try source.readPart(path: path), path != "word/_rels/document.xml.rels" {
+            try archive.writePart(path: path, data: data)
+        }
+    }
+
+    let documentRels = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rIdUnknownChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/>
+    </Relationships>
+    """
+    try archive.writePart(path: "word/_rels/document.xml.rels", data: Data(documentRels.utf8))
+    try archive.writePart(path: "word/charts/chart1.xml", data: Data("<c:chart/>".utf8))
+
+    var model = try OOXMLEngine.readWord(from: archive.data)
+    model.blocks = [
+        .paragraph(WriteParagraph(runs: [
+            WriteRun(text: "Chart rel plus "),
+            WriteRun(text: "link", linkURL: "https://example.com"),
+        ])),
+    ]
+    let saved = try OOXMLEngine.writeWord(model: model)
+    let savedArchive = try OOXMLArchive(data: saved)
+
+    #expect(try savedArchive.readPart(path: "word/charts/chart1.xml") == Data("<c:chart/>".utf8))
+
+    let savedRelsData = try #require(try savedArchive.readPart(path: "word/_rels/document.xml.rels"))
+    let savedRels = String(data: savedRelsData, encoding: .utf8)
+    #expect(savedRels?.contains("rIdUnknownChart") == true)
+    #expect(savedRels?.contains("charts/chart1.xml") == true)
+    #expect(savedRels?.contains("https://example.com") == true)
+}

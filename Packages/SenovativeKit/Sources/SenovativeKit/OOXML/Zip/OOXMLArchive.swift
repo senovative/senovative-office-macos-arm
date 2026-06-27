@@ -21,6 +21,21 @@ public class OOXMLArchive {
     public var data: Data {
         return archive.data ?? Data()
     }
+
+    public var partPaths: [String] {
+        archive.map(\.path)
+    }
+
+    public func readAllParts(maxPartSize: Int = 50 * 1024 * 1024) throws -> [String: Data] {
+        var parts: [String: Data] = [:]
+        for entry in archive where entry.type == .file {
+            if entry.uncompressedSize > maxPartSize {
+                throw SenovativeDocumentError.fileCorrupted("OOXML part too large: \(entry.path)")
+            }
+            parts[entry.path] = try readPart(path: entry.path)
+        }
+        return parts
+    }
     
     public func readPart(path: String) throws -> Data? {
         guard let entry = archive[path] else { return nil }
