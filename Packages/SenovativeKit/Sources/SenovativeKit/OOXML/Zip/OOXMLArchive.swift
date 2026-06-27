@@ -11,17 +11,11 @@ public class OOXMLArchive {
     private var archive: Archive
     
     public init(data: Data) throws {
-        guard let arch = Archive(data: data, accessMode: .read) else {
-            throw OOXMLArchiveError.invalidArchive
-        }
-        self.archive = arch
+        self.archive = try Archive(data: data, accessMode: .read)
     }
     
     public init(mode: Archive.AccessMode) throws {
-        guard let arch = Archive(accessMode: mode) else {
-            throw OOXMLArchiveError.invalidArchive
-        }
-        self.archive = arch
+        self.archive = try Archive(accessMode: mode)
     }
     
     public var data: Data {

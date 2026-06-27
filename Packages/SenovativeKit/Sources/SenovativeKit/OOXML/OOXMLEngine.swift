@@ -16,9 +16,14 @@ public enum OOXMLEngine {
 
     public static func writeWord(model: WriteDocumentModel) throws -> Data {
         let archive = try OOXMLArchive(mode: .create)
+        let includeNumbering = WordprocessingMLWriter.needsNumbering(model.paragraphs)
 
-        try archive.writePart(path: "[Content_Types].xml", data: WordprocessingMLWriter.contentTypes())
+        try archive.writePart(path: "[Content_Types].xml", data: WordprocessingMLWriter.contentTypes(includeNumbering: includeNumbering))
         try archive.writePart(path: "_rels/.rels", data: WordprocessingMLWriter.rootRels())
+        if includeNumbering {
+            try archive.writePart(path: "word/_rels/document.xml.rels", data: WordprocessingMLWriter.documentRels(includeNumbering: true))
+            try archive.writePart(path: "word/numbering.xml", data: WordprocessingMLWriter.numbering())
+        }
 
         let documentXml = WordprocessingMLWriter.document(paragraphs: model.paragraphs)
         try archive.writePart(path: "word/document.xml", data: documentXml)

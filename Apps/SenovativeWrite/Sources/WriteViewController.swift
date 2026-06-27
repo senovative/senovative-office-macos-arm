@@ -29,6 +29,12 @@ private struct WriteDocumentView: View {
     var body: some View {
         VStack(spacing: 0) {
             RibbonShell {
+                RibbonIconButton("Fonts", systemImage: "textformat") {
+                    NSFontManager.shared.orderFrontFontPanel(nil)
+                }
+                RibbonIconButton("Text Color", systemImage: "paintpalette") {
+                    NSApplication.shared.orderFrontColorPanel(nil)
+                }
                 RibbonIconButton("Bold", systemImage: "bold") {
                     NSApplication.shared.sendAction(Selector(("toggleBoldface:")), to: nil, from: nil)
                 }
@@ -37,6 +43,30 @@ private struct WriteDocumentView: View {
                 }
                 RibbonIconButton("Underline", systemImage: "underline") {
                     NSApplication.shared.sendAction(Selector(("toggleUnderline:")), to: nil, from: nil)
+                }
+                RibbonIconButton("Highlight", systemImage: "highlighter") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.toggleHighlight(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Align Left", systemImage: "text.alignleft") {
+                    NSApplication.shared.sendAction(#selector(NSText.alignLeft(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Align Center", systemImage: "text.aligncenter") {
+                    NSApplication.shared.sendAction(#selector(NSText.alignCenter(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Align Right", systemImage: "text.alignright") {
+                    NSApplication.shared.sendAction(#selector(NSText.alignRight(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Bullet List", systemImage: "list.bullet") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.toggleBulletList(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Numbered List", systemImage: "list.number") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.toggleNumberedList(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Superscript", systemImage: "textformat.superscript") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.toggleSuperscript(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Subscript", systemImage: "textformat.subscript") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.toggleSubscript(_:)), to: nil, from: nil)
                 }
             }
 
@@ -87,7 +117,7 @@ private struct DocumentCanvas: NSViewRepresentable {
         scrollView.drawsBackground = false
 
         // Force a TextKit 2 (NSTextLayoutManager) backing store.
-        let textView = NSTextView(usingTextLayoutManager: true)
+        let textView = RichTextView(usingTextLayoutManager: true)
         textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = true
@@ -169,10 +199,10 @@ private enum WriteAttributedStringBridge {
         let result = NSMutableAttributedString()
         for (index, paragraph) in model.paragraphs.enumerated() {
             if index > 0 {
-                result.append(NSAttributedString(string: "\n", attributes: defaultTypingAttributes))
+                result.append(NSAttributedString(string: "\n", attributes: paragraphAttributes(for: paragraph)))
             }
             for run in paragraph.runs {
-                result.append(NSAttributedString(string: run.text, attributes: attributes(for: run)))
+                result.append(NSAttributedString(string: run.text, attributes: attributes(for: run, paragraph: paragraph)))
             }
         }
         return result
@@ -180,47 +210,124 @@ private enum WriteAttributedStringBridge {
 
     static func model(from attributed: NSAttributedString, title: String) -> WriteDocumentModel {
         var paragraphs: [WriteParagraph] = []
-        var currentRuns: [WriteRun] = []
 
-        let fullRange = NSRange(location: 0, length: attributed.length)
-        attributed.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
-            let substring = (attributed.string as NSString).substring(with: range)
-            let bold = isBold(attrs)
-            let italic = isItalic(attrs)
-            let underline = isUnderlined(attrs)
+        if attributed.length == 0 {
+            return WriteDocumentModel(title: title, paragraphs: [WriteParagraph()])
+        }
 
-            let segments = substring.components(separatedBy: "\n")
-            for (offset, segment) in segments.enumerated() {
-                if offset > 0 {
-                    paragraphs.append(WriteParagraph(runs: currentRuns))
-                    currentRuns = []
-                }
-                if !segment.isEmpty {
-                    currentRuns.append(
-                        WriteRun(text: segment, bold: bold, italic: italic, underline: underline)
-                    )
-                }
+        let string = attributed.string as NSString
+        var paragraphStart = 0
+        while paragraphStart <= attributed.length {
+            let searchRange = NSRange(location: paragraphStart, length: attributed.length - paragraphStart)
+            let newline = string.range(of: "\n", options: [], range: searchRange)
+            let paragraphEnd = newline.location == NSNotFound ? attributed.length : newline.location
+            let paragraphRange = NSRange(location: paragraphStart, length: paragraphEnd - paragraphStart)
+            paragraphs.append(paragraph(from: attributed, range: paragraphRange))
+
+            if newline.location == NSNotFound {
+                break
+            }
+            paragraphStart = newline.location + 1
+            if paragraphStart == attributed.length {
+                paragraphs.append(WriteParagraph())
+                break
             }
         }
-        paragraphs.append(WriteParagraph(runs: currentRuns))
 
         return WriteDocumentModel(title: title, paragraphs: paragraphs)
     }
 
-    private static func attributes(for run: WriteRun) -> [NSAttributedString.Key: Any] {
+    private static func paragraph(from attributed: NSAttributedString, range: NSRange) -> WriteParagraph {
+        let paragraphStyle = paragraphStyle(from: attributed, range: range)
+        var runs: [WriteRun] = []
+        if range.length > 0 {
+            attributed.enumerateAttributes(in: range, options: []) { attrs, runRange, _ in
+                let substring = (attributed.string as NSString).substring(with: runRange)
+                guard !substring.isEmpty else { return }
+                runs.append(
+                    WriteRun(
+                        text: substring,
+                        bold: isBold(attrs),
+                        italic: isItalic(attrs),
+                        underline: isUnderlined(attrs),
+                        fontFamily: fontFamily(attrs),
+                        fontSize: fontSize(attrs),
+                        textColorHex: colorHex(attrs[.foregroundColor] as? NSColor),
+                        highlightColorHex: colorHex(attrs[.backgroundColor] as? NSColor),
+                        verticalAlignment: verticalAlignment(attrs)
+                    )
+                )
+            }
+        }
+
+        return WriteParagraph(
+            runs: runs,
+            alignment: alignment(paragraphStyle.alignment),
+            lineSpacing: paragraphStyle.lineSpacing > 0 ? paragraphStyle.lineSpacing : nil,
+            spacingBefore: paragraphStyle.paragraphSpacingBefore > 0 ? paragraphStyle.paragraphSpacingBefore : nil,
+            spacingAfter: paragraphStyle.paragraphSpacing > 0 ? paragraphStyle.paragraphSpacing : nil,
+            leftIndent: paragraphStyle.headIndent > 0 ? paragraphStyle.headIndent : nil,
+            firstLineIndent: paragraphStyle.firstLineHeadIndent != 0 ? paragraphStyle.firstLineHeadIndent : nil,
+            list: listStyle(paragraphStyle)
+        )
+    }
+
+    private static func paragraphStyle(from attributed: NSAttributedString, range: NSRange) -> NSParagraphStyle {
+        guard attributed.length > 0 else { return NSParagraphStyle.default }
+        let location = min(range.location, attributed.length - 1)
+        return attributed.attribute(.paragraphStyle, at: location, effectiveRange: nil) as? NSParagraphStyle
+            ?? NSParagraphStyle.default
+    }
+
+    private static func attributes(for run: WriteRun, paragraph: WriteParagraph) -> [NSAttributedString.Key: Any] {
         let manager = NSFontManager.shared
-        var font = defaultFont
+        let baseFont = NSFont(name: run.fontFamily ?? defaultFont.fontName, size: CGFloat(run.fontSize ?? defaultFontSize)) ?? defaultFont
+        var font = baseFont
         if run.bold { font = manager.convert(font, toHaveTrait: .boldFontMask) }
         if run.italic { font = manager.convert(font, toHaveTrait: .italicFontMask) }
 
         var attrs: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: nsColor(hex: run.textColorHex) ?? NSColor.labelColor,
+            .paragraphStyle: paragraphStyle(for: paragraph),
         ]
         if run.underline {
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
         }
+        if let highlight = nsColor(hex: run.highlightColorHex) {
+            attrs[.backgroundColor] = highlight
+        }
+        switch run.verticalAlignment {
+        case .baseline:
+            break
+        case .superscript:
+            attrs[.superscript] = 1
+        case .subscripted:
+            attrs[.superscript] = -1
+        }
         return attrs
+    }
+
+    private static func paragraphAttributes(for paragraph: WriteParagraph) -> [NSAttributedString.Key: Any] {
+        var attrs = defaultTypingAttributes
+        attrs[.paragraphStyle] = paragraphStyle(for: paragraph)
+        return attrs
+    }
+
+    private static func paragraphStyle(for paragraph: WriteParagraph) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.alignment = nsAlignment(paragraph.alignment)
+        if let lineSpacing = paragraph.lineSpacing { style.lineSpacing = lineSpacing }
+        if let spacingBefore = paragraph.spacingBefore { style.paragraphSpacingBefore = spacingBefore }
+        if let spacingAfter = paragraph.spacingAfter { style.paragraphSpacing = spacingAfter }
+        if let leftIndent = paragraph.leftIndent { style.headIndent = leftIndent }
+        if let firstLineIndent = paragraph.firstLineIndent { style.firstLineHeadIndent = firstLineIndent }
+        if let list = paragraph.list {
+            style.textLists = [NSTextList(markerFormat: list.kind == .bullet ? .disc : .decimal, options: 0)]
+            if style.headIndent == 0 { style.headIndent = 36 }
+            if style.firstLineHeadIndent == 0 { style.firstLineHeadIndent = -18 }
+        }
+        return style
     }
 
     private static func isBold(_ attrs: [NSAttributedString.Key: Any]) -> Bool {
@@ -236,5 +343,134 @@ private enum WriteAttributedStringBridge {
     private static func isUnderlined(_ attrs: [NSAttributedString.Key: Any]) -> Bool {
         guard let raw = attrs[.underlineStyle] as? Int else { return false }
         return raw != 0
+    }
+
+    private static func fontFamily(_ attrs: [NSAttributedString.Key: Any]) -> String? {
+        guard let font = attrs[.font] as? NSFont else { return nil }
+        return font.familyName
+    }
+
+    private static func fontSize(_ attrs: [NSAttributedString.Key: Any]) -> Double? {
+        guard let font = attrs[.font] as? NSFont else { return nil }
+        return Double(font.pointSize)
+    }
+
+    private static func verticalAlignment(_ attrs: [NSAttributedString.Key: Any]) -> WriteVerticalAlignment {
+        let raw = attrs[.superscript] as? Int ?? 0
+        if raw > 0 { return .superscript }
+        if raw < 0 { return .subscripted }
+        return .baseline
+    }
+
+    private static func alignment(_ alignment: NSTextAlignment) -> WriteParagraphAlignment {
+        switch alignment {
+        case .center:
+            .center
+        case .right:
+            .right
+        case .justified:
+            .justified
+        default:
+            .left
+        }
+    }
+
+    private static func nsAlignment(_ alignment: WriteParagraphAlignment) -> NSTextAlignment {
+        switch alignment {
+        case .left:
+            .left
+        case .center:
+            .center
+        case .right:
+            .right
+        case .justified:
+            .justified
+        }
+    }
+
+    private static func listStyle(_ paragraphStyle: NSParagraphStyle) -> WriteListStyle? {
+        guard let textList = paragraphStyle.textLists.first else { return nil }
+        let format = textList.markerFormat
+        let kind: WriteListKind = format == .disc || format == .circle || format == .square ? .bullet : .numbered
+        return WriteListStyle(kind: kind)
+    }
+
+    private static func colorHex(_ color: NSColor?) -> String? {
+        guard
+            let color = color?.usingColorSpace(.sRGB),
+            color.alphaComponent > 0
+        else {
+            return nil
+        }
+        let red = Int((color.redComponent * 255).rounded())
+        let green = Int((color.greenComponent * 255).rounded())
+        let blue = Int((color.blueComponent * 255).rounded())
+        return String(format: "%02X%02X%02X", red, green, blue)
+    }
+
+    private static func nsColor(hex: String?) -> NSColor? {
+        guard let hex, hex.count == 6, let value = Int(hex, radix: 16) else { return nil }
+        let red = CGFloat((value >> 16) & 0xFF) / 255.0
+        let green = CGFloat((value >> 8) & 0xFF) / 255.0
+        let blue = CGFloat(value & 0xFF) / 255.0
+        return NSColor(srgbRed: red, green: green, blue: blue, alpha: 1)
+    }
+}
+
+private final class RichTextView: NSTextView {
+    @objc func toggleHighlight(_ sender: Any?) {
+        let range = selectedRange()
+        let targetRange = range.length > 0 ? range : NSRange(location: range.location, length: 0)
+        let color = NSColor.systemYellow.withAlphaComponent(0.45)
+        if targetRange.length > 0 {
+            textStorage?.addAttribute(.backgroundColor, value: color, range: targetRange)
+            didChangeText()
+        } else {
+            typingAttributes[.backgroundColor] = color
+        }
+    }
+
+    @objc func toggleSuperscript(_ sender: Any?) {
+        setSuperscript(1)
+    }
+
+    @objc func toggleSubscript(_ sender: Any?) {
+        setSuperscript(-1)
+    }
+
+    @objc func toggleBulletList(_ sender: Any?) {
+        applyList(.bullet)
+    }
+
+    @objc func toggleNumberedList(_ sender: Any?) {
+        applyList(.numbered)
+    }
+
+    private func setSuperscript(_ value: Int) {
+        let range = selectedRange()
+        if range.length > 0 {
+            textStorage?.addAttribute(.superscript, value: value, range: range)
+            didChangeText()
+        } else {
+            typingAttributes[.superscript] = value
+        }
+    }
+
+    private func applyList(_ kind: WriteListKind) {
+        guard let storage = textStorage else { return }
+        let selected = selectedRange()
+        let fullText = storage.string as NSString
+        let paragraphRange = fullText.paragraphRange(for: selected.length > 0 ? selected : NSRange(location: selected.location, length: 0))
+        storage.beginEditing()
+        fullText.enumerateSubstrings(in: paragraphRange, options: [.byParagraphs, .substringNotRequired]) { _, range, _, _ in
+            let style = (storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
+                ?? NSMutableParagraphStyle()
+            style.textLists = [NSTextList(markerFormat: kind == .bullet ? .disc : .decimal, options: 0)]
+            if style.headIndent == 0 { style.headIndent = 36 }
+            if style.firstLineHeadIndent == 0 { style.firstLineHeadIndent = -18 }
+            storage.addAttribute(.paragraphStyle, value: style, range: range)
+        }
+        storage.endEditing()
+        didChangeText()
     }
 }

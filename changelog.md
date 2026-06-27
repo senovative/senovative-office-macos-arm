@@ -280,3 +280,183 @@ Menyelesaikan Fase 1.c: canvas editing berbasis **TextKit 2** (`NSTextLayoutMana
 ### Status Roadmap
 
 Fase 1.c selesai secara fungsional. Langkah berikutnya **Fase 1.d — Rich Formatting**: font family/size, warna & highlight, alignment, line/paragraph spacing, bullet & numbered list (`numbering.xml`), indent, super/subscript, styles (`styles.xml`).
+
+---
+
+## 2026-06-27 — Fase 1.d Rich Formatting
+
+**Dikerjakan oleh:** Codex CLI
+
+### Ringkasan
+
+Mengerjakan Fase 1.d versi fungsional: memperluas model dokumen, parser/writer OOXML, dan editor TextKit 2 agar mendukung format kaya dasar. Dukungan yang ditambahkan mencakup font family/size, warna teks, highlight, alignment paragraf, line/paragraph spacing, indent, bullet/numbered list dasar, serta superscript/subscript.
+
+### Perubahan Utama
+
+- **Model dokumen diperluas** (`WriteDocumentModel.swift`):
+  - `WriteRun` kini menyimpan:
+    - `fontFamily`
+    - `fontSize`
+    - `textColorHex`
+    - `highlightColorHex`
+    - `verticalAlignment`
+  - Menambahkan `WriteVerticalAlignment`:
+    - `baseline`
+    - `superscript`
+    - `subscripted`
+  - `WriteParagraph` kini menyimpan:
+    - `alignment`
+    - `lineSpacing`
+    - `spacingBefore`
+    - `spacingAfter`
+    - `leftIndent`
+    - `firstLineIndent`
+    - `list`
+  - Menambahkan:
+    - `WriteParagraphAlignment`
+    - `WriteListStyle`
+    - `WriteListKind`
+
+- **OOXML WordprocessingML diperluas** (`WordprocessingML.swift`):
+  - Parser membaca properti run:
+    - `<w:rFonts>`
+    - `<w:sz>`
+    - `<w:color>`
+    - `<w:shd>`
+    - `<w:vertAlign>`
+  - Parser membaca properti paragraf:
+    - `<w:jc>`
+    - `<w:spacing>`
+    - `<w:ind>`
+    - `<w:numPr>`
+  - Writer menulis properti run dan paragraf tersebut kembali ke `word/document.xml`.
+  - Writer menambahkan `word/numbering.xml` untuk list dasar saat dokumen memakai bullet/numbered list.
+  - Writer menambahkan relationship `word/_rels/document.xml.rels` untuk numbering saat diperlukan.
+
+- **OOXML engine diperbarui** (`OOXMLEngine.swift`):
+  - Menentukan apakah dokumen membutuhkan numbering.
+  - Menulis `[Content_Types].xml`, relationship, dan `numbering.xml` sesuai kebutuhan list.
+
+- **Editor TextKit 2 diperluas** (`WriteViewController.swift`):
+  - Bridge model ↔ `NSAttributedString` kini memetakan:
+    - Font family dan ukuran font.
+    - Warna teks.
+    - Background highlight.
+    - Underline.
+    - Superscript/subscript via `.superscript`.
+    - Paragraph style: alignment, spacing, indent, text lists.
+  - Menambahkan tombol ribbon:
+    - Font panel.
+    - Color panel.
+    - Bold/Italic/Underline.
+    - Highlight.
+    - Align left/center/right.
+    - Bullet list.
+    - Numbered list.
+    - Superscript.
+    - Subscript.
+  - Menambahkan `RichTextView` untuk action custom:
+    - `toggleHighlight`
+    - `toggleBulletList`
+    - `toggleNumberedList`
+    - `toggleSuperscript`
+    - `toggleSubscript`
+
+- **OOXMLArchive dirapikan** (`OOXMLArchive.swift`):
+  - Mengganti initializer ZIPFoundation deprecated ke throwing initializer baru.
+
+- **Test coverage ditambah** (`SenovativeKitTests.swift`):
+  - Test round-trip rich run formatting:
+    - font family
+    - font size
+    - text color
+    - highlight
+    - superscript/subscript
+  - Test round-trip paragraph formatting dan list:
+    - alignment
+    - line spacing
+    - spacing before/after
+    - indent
+    - bullet list
+    - numbered list
+
+### Verifikasi Build & Test
+
+Perintah yang sudah dijalankan dan berhasil:
+
+```bash
+swift test
+```
+
+Berhasil untuk:
+
+- `Packages/SenovativeKit` — 6 test lulus.
+- `Packages/SenovativeUI` — 1 test lulus.
+
+```bash
+xcodebuild -workspace SenovativeOffice.xcworkspace -scheme SenovativeWrite -configuration Debug -arch arm64 -derivedDataPath build -quiet build
+```
+
+Berhasil.
+
+```bash
+./Tools/build.sh
+```
+
+Berhasil membuat release app:
+
+```text
+build/Build/Products/Release/SenovativeWrite.app
+```
+
+Verifikasi tambahan:
+
+- Executable release:
+
+```text
+Mach-O 64-bit executable arm64
+```
+
+- Code signing ad-hoc valid:
+
+```text
+SenovativeWrite.app: valid on disk
+SenovativeWrite.app: satisfies its Designated Requirement
+```
+
+### Catatan Teknis Untuk Agen Berikutnya
+
+- **Styles (`styles.xml`) belum diimplementasikan penuh.** Fase 1.d sudah menambahkan formatting langsung di run/paragraf, tetapi style named seperti Normal/Heading 1 belum dibuat sebagai sistem style OOXML penuh. Ini masih perlu dilanjutkan bila ingin memenuhi fidelity Word yang lebih baik.
+
+- **List masih dasar.** `numbering.xml` memakai definisi statis untuk bullet dan decimal numbering level 0. Multi-level list, restart numbering, custom marker, dan list style preservation belum ada.
+
+- **Round-trip preservation belum ada.** Saat menyimpan, writer masih membuat `.docx` minimal baru dan belum mempertahankan part yang tidak dikenal. Ini tetap menjadi pekerjaan besar Fase 1.g.
+
+- **Highlight memakai `<w:shd w:fill="...">`.** Ini dipilih agar warna highlight bebas berbasis hex, bukan hanya pilihan terbatas `<w:highlight>`.
+
+- **Bridge editor masih rebuild model per edit.** Sama seperti Fase 1.c, `textDidChange` membangun ulang model dari seluruh `NSTextStorage`. Cukup untuk MVP, tetapi dokumen besar butuh strategi incremental.
+
+- **UI rich formatting berbasis action AppKit.** Font dan color menggunakan panel macOS standar; beberapa kontrol seperti list/highlight/super/subscript dibuat sebagai action custom di `RichTextView`.
+
+### Status Roadmap
+
+Fase 1.d selesai secara fungsional untuk format kaya dasar:
+
+- Font family/size: selesai.
+- Warna teks: selesai.
+- Highlight: selesai.
+- Alignment: selesai.
+- Line/paragraph spacing: selesai.
+- Indent: selesai.
+- Bullet & numbered list dasar: selesai.
+- Superscript/subscript: selesai.
+- Styles penuh (`styles.xml`): belum selesai, masih perlu fase lanjutan/fidelity.
+
+Langkah berikutnya adalah **Fase 1.e — Page Layout & Pagination**:
+
+- Tampilan halaman.
+- Margin dan ukuran kertas (`sectPr`).
+- Header/footer.
+- Ruler.
+- Page break.
+- Nomor halaman.

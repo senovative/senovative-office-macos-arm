@@ -68,3 +68,78 @@ import Testing
     #expect(paragraphs[0].runs[0].text == "not bold")
     #expect(!paragraphs[0].runs[0].bold)
 }
+
+@Test func wordRoundTripPreservesRichRunFormatting() throws {
+    let model = WriteDocumentModel(title: "Rich Runs", paragraphs: [
+        WriteParagraph(runs: [
+            WriteRun(
+                text: "Styled",
+                bold: true,
+                italic: true,
+                underline: true,
+                fontFamily: "Helvetica",
+                fontSize: 18,
+                textColorHex: "336699",
+                highlightColorHex: "FFF2CC",
+                verticalAlignment: .superscript
+            ),
+            WriteRun(
+                text: " low",
+                fontFamily: "Times New Roman",
+                fontSize: 11,
+                textColorHex: "990000",
+                verticalAlignment: .subscripted
+            ),
+        ]),
+    ])
+
+    let data = try OOXMLEngine.writeWord(model: model)
+    let parsed = try OOXMLEngine.readWord(from: data)
+    let runs = parsed.paragraphs[0].runs
+
+    #expect(runs[0].fontFamily == "Helvetica")
+    #expect(runs[0].fontSize == 18)
+    #expect(runs[0].textColorHex == "336699")
+    #expect(runs[0].highlightColorHex == "FFF2CC")
+    #expect(runs[0].verticalAlignment == .superscript)
+    #expect(runs[1].fontFamily == "Times New Roman")
+    #expect(runs[1].fontSize == 11)
+    #expect(runs[1].textColorHex == "990000")
+    #expect(runs[1].verticalAlignment == .subscripted)
+}
+
+@Test func wordRoundTripPreservesParagraphFormattingAndLists() throws {
+    let model = WriteDocumentModel(title: "Paragraphs", paragraphs: [
+        WriteParagraph(
+            runs: [WriteRun(text: "Centered")],
+            alignment: .center,
+            lineSpacing: 18,
+            spacingBefore: 6,
+            spacingAfter: 12,
+            leftIndent: 24,
+            firstLineIndent: 12
+        ),
+        WriteParagraph(
+            runs: [WriteRun(text: "Bullet")],
+            list: WriteListStyle(kind: .bullet)
+        ),
+        WriteParagraph(
+            runs: [WriteRun(text: "Number")],
+            alignment: .right,
+            list: WriteListStyle(kind: .numbered)
+        ),
+    ])
+
+    let data = try OOXMLEngine.writeWord(model: model)
+    let parsed = try OOXMLEngine.readWord(from: data)
+
+    #expect(parsed.paragraphs[0].alignment == .center)
+    #expect(parsed.paragraphs[0].lineSpacing == 18)
+    #expect(parsed.paragraphs[0].spacingBefore == 6)
+    #expect(parsed.paragraphs[0].spacingAfter == 12)
+    #expect(parsed.paragraphs[0].leftIndent == 24)
+    #expect(parsed.paragraphs[0].firstLineIndent == 12)
+    #expect(parsed.paragraphs[1].list == WriteListStyle(kind: .bullet))
+    #expect(parsed.paragraphs[2].alignment == .right)
+    #expect(parsed.paragraphs[2].list == WriteListStyle(kind: .numbered))
+}
