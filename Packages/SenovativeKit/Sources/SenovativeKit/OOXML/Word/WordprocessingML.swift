@@ -9,6 +9,7 @@ import Foundation
 final class WordprocessingMLParser: NSObject, XMLParserDelegate {
     private var paragraphs: [WriteParagraph] = []
     private var currentRuns: [WriteRun] = []
+    private var section = WriteDocumentSection()
 
     private var inRun = false
     private var inParagraphProperties = false
@@ -25,6 +26,7 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
     private var runTextColorHex: String?
     private var runHighlightColorHex: String?
     private var runVerticalAlignment: WriteVerticalAlignment = .baseline
+    private var runIsPageBreak = false
 
     private var paragraphAlignment: WriteParagraphAlignment = .left
     private var paragraphLineSpacing: Double?
@@ -34,14 +36,15 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
     private var paragraphFirstLineIndent: Double?
     private var paragraphListLevel: Int?
     private var paragraphNumberingId: Int?
+    private var paragraphPageBreakBefore = false
 
-    func parse(data: Data) throws -> [WriteParagraph] {
+    func parse(data: Data) throws -> (paragraphs: [WriteParagraph], section: WriteDocumentSection) {
         let parser = XMLParser(data: data)
         parser.delegate = self
         guard parser.parse() else {
             throw SenovativeDocumentError.fileCorrupted("XML parsing failed")
         }
-        return paragraphs
+        return (paragraphs, section)
     }
 
     func parser(
@@ -62,11 +65,16 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             paragraphFirstLineIndent = nil
             paragraphListLevel = nil
             paragraphNumberingId = nil
+            paragraphPageBreakBefore = false
         case "pPr":
             inParagraphProperties = true
         case "jc":
             if inParagraphProperties {
                 paragraphAlignment = alignment(from: attribute(attributeDict, "val"))
+            }
+        case "pageBreakBefore":
+            if inParagraphProperties {
+                paragraphPageBreakBefore = isOn(attributeDict)
             }
         case "spacing":
             if inParagraphProperties {
@@ -99,6 +107,7 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             runTextColorHex = nil
             runHighlightColorHex = nil
             runVerticalAlignment = .baseline
+            runIsPageBreak = false
         case "rPr":
             if inRun { inRunProperties = true }
         case "b":
@@ -129,8 +138,24 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             if inRun && inRunProperties {
                 runVerticalAlignment = verticalAlignment(from: attribute(attributeDict, "val"))
             }
+        case "br":
+            if inRun, attribute(attributeDict, "type") == "page" {
+                runIsPageBreak = true
+            }
         case "t":
             if inRun { inText = true }
+        case "pgSz":
+            if let w = points(fromTwips: attribute(attributeDict, "w")),
+               let h = points(fromTwips: attribute(attributeDict, "h")) {
+                section.pageSize = WritePageSize(width: w, height: h)
+            }
+        case "pgMar":
+            if let top = points(fromTwips: attribute(attributeDict, "top")),
+               let left = points(fromTwips: attribute(attributeDict, "left")),
+               let bottom = points(fromTwips: attribute(attributeDict, "bottom")),
+               let right = points(fromTwips: attribute(attributeDict, "right")) {
+                section.margins = WriteEdgeInsets(top: top, left: left, bottom: bottom, right: right)
+            }
         default:
             break
         }
@@ -156,7 +181,7 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
         case "rPr":
             inRunProperties = false
         case "r":
-            if inRun, !runText.isEmpty {
+            if inRun, !runText.isEmpty || runIsPageBreak {
                 currentRuns.append(
                     WriteRun(
                         text: runText,
@@ -167,7 +192,8 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
                         fontSize: runFontSize,
                         textColorHex: runTextColorHex,
                         highlightColorHex: runHighlightColorHex,
-                        verticalAlignment: runVerticalAlignment
+                        verticalAlignment: runVerticalAlignment,
+                        isPageBreak: runIsPageBreak
                     )
                 )
             }
@@ -182,7 +208,8 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
                     spacingAfter: paragraphSpacingAfter,
                     leftIndent: paragraphLeftIndent,
                     firstLineIndent: paragraphFirstLineIndent,
-                    list: listStyle(numberingId: paragraphNumberingId, level: paragraphListLevel)
+                    list: listStyle(numberingId: paragraphNumberingId, level: paragraphListLevel),
+                    pageBreakBefore: paragraphPageBreakBefore
                 )
             )
             currentRuns = []
@@ -267,16 +294,22 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
 }
 
 enum WordprocessingMLWriter {
-    static func contentTypes(includeNumbering: Bool) -> Data {
+    static func contentTypes(includeNumbering: Bool, hasHeader: Bool, hasFooter: Bool) -> Data {
         let numberingOverride = includeNumbering
             ? "\n    <Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/>"
+            : ""
+        let headerOverride = hasHeader
+            ? "\n    <Override PartName=\"/word/header1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml\"/>"
+            : ""
+        let footerOverride = hasFooter
+            ? "\n    <Override PartName=\"/word/footer1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml\"/>"
             : ""
         let xml = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
             <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
             <Default Extension="xml" ContentType="application/xml"/>
-            <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>\(numberingOverride)
+            <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>\(numberingOverride)\(headerOverride)\(footerOverride)
         </Types>
         """
         return Data(xml.utf8)
@@ -292,36 +325,34 @@ enum WordprocessingMLWriter {
         return Data(xml.utf8)
     }
 
-    static func documentRels(includeNumbering: Bool) -> Data {
-        let numberingRelationship = includeNumbering
-            ? "\n    <Relationship Id=\"rIdNumbering\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/>"
-            : ""
+    static func documentRels(includeNumbering: Bool, hasHeader: Bool, hasFooter: Bool) -> Data {
+        var relationships = ""
+        if includeNumbering {
+            relationships += "\n    <Relationship Id=\"rIdNumbering\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/>"
+        }
+        if hasHeader {
+            relationships += "\n    <Relationship Id=\"rIdHeader1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/header\" Target=\"header1.xml\"/>"
+        }
+        if hasFooter {
+            relationships += "\n    <Relationship Id=\"rIdFooter1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer\" Target=\"footer1.xml\"/>"
+        }
         let xml = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\(numberingRelationship)
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\(relationships)
         </Relationships>
         """
         return Data(xml.utf8)
     }
 
-    static func document(paragraphs: [WriteParagraph]) -> Data {
+    static func document(paragraphs: [WriteParagraph], section: WriteDocumentSection) -> Data {
         var xml = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
             <w:body>
         """
 
-        for paragraph in paragraphs {
-            xml += "\n        <w:p>"
-            xml += paragraphProperties(for: paragraph)
-            for run in paragraph.runs {
-                xml += "\n            <w:r>"
-                xml += runProperties(for: run)
-                xml += "\n                <w:t xml:space=\"preserve\">\(escape(run.text))</w:t>"
-                xml += "\n            </w:r>"
-            }
-            xml += "\n        </w:p>"
-        }
+        xml += writeParagraphs(paragraphs)
+        xml += sectionProperties(for: section)
 
         xml += """
 
@@ -329,6 +360,47 @@ enum WordprocessingMLWriter {
         </w:document>
         """
         return Data(xml.utf8)
+    }
+
+    static func header(paragraphs: [WriteParagraph]) -> Data {
+        var xml = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        """
+        xml += writeParagraphs(paragraphs)
+        xml += "\n</w:hdr>"
+        return Data(xml.utf8)
+    }
+
+    static func footer(paragraphs: [WriteParagraph]) -> Data {
+        var xml = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        """
+        xml += writeParagraphs(paragraphs)
+        xml += "\n</w:ftr>"
+        return Data(xml.utf8)
+    }
+
+    private static func writeParagraphs(_ paragraphs: [WriteParagraph]) -> String {
+        var xml = ""
+        for paragraph in paragraphs {
+            xml += "\n        <w:p>"
+            xml += paragraphProperties(for: paragraph)
+            for run in paragraph.runs {
+                xml += "\n            <w:r>"
+                xml += runProperties(for: run)
+                if run.isPageBreak {
+                    xml += "\n                <w:br w:type=\"page\"/>"
+                }
+                if !run.text.isEmpty {
+                    xml += "\n                <w:t xml:space=\"preserve\">\(escape(run.text))</w:t>"
+                }
+                xml += "\n            </w:r>"
+            }
+            xml += "\n        </w:p>"
+        }
+        return xml
     }
 
     static func numbering() -> Data {
@@ -375,6 +447,10 @@ enum WordprocessingMLWriter {
             parts.append("<w:jc w:val=\"\(alignmentValue(paragraph.alignment))\"/>")
         }
 
+        if paragraph.pageBreakBefore {
+            parts.append("<w:pageBreakBefore/>")
+        }
+
         var spacingAttributes: [String] = []
         if let lineSpacing = paragraph.lineSpacing {
             spacingAttributes.append("w:line=\"\(twips(lineSpacing))\"")
@@ -411,6 +487,26 @@ enum WordprocessingMLWriter {
         }
 
         return parts
+    }
+
+    private static func sectionProperties(for section: WriteDocumentSection) -> String {
+        let w = twips(section.pageSize.width)
+        let h = twips(section.pageSize.height)
+        let top = twips(section.margins.top)
+        let left = twips(section.margins.left)
+        let bottom = twips(section.margins.bottom)
+        let right = twips(section.margins.right)
+        
+        let headerRef = !section.header.isEmpty ? "\n                    <w:headerReference w:type=\"default\" r:id=\"rIdHeader1\"/>" : ""
+        let footerRef = !section.footer.isEmpty ? "\n                    <w:footerReference w:type=\"default\" r:id=\"rIdFooter1\"/>" : ""
+        
+        return """
+        
+                <w:sectPr>\(headerRef)\(footerRef)
+                    <w:pgSz w:w="\(w)" w:h="\(h)"/>
+                    <w:pgMar w:top="\(top)" w:right="\(right)" w:bottom="\(bottom)" w:left="\(left)" w:header="720" w:footer="720" w:gutter="0"/>
+                </w:sectPr>
+        """
     }
 
     private static func runProperties(for run: WriteRun) -> String {

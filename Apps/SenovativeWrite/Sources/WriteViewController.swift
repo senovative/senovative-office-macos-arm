@@ -112,9 +112,13 @@ private struct DocumentCanvas: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
+        scrollView.hasHorizontalScroller = true
         scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .underPageBackgroundColor
+        scrollView.hasVerticalRuler = true
+        scrollView.hasHorizontalRuler = true
+        scrollView.rulersVisible = true
 
         // Force a TextKit 2 (NSTextLayoutManager) backing store.
         let textView = RichTextView(usingTextLayoutManager: true)
@@ -127,17 +131,37 @@ private struct DocumentCanvas: NSViewRepresentable {
         textView.backgroundColor = .textBackgroundColor
         textView.textColor = .labelColor
         textView.font = WriteAttributedStringBridge.defaultFont
-        textView.textContainerInset = NSSize(width: 48, height: 48)
         textView.delegate = context.coordinator
 
-        textView.minSize = NSSize(width: 0, height: 0)
-        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        let pageSize = state.model.section.pageSize
+        let margins = state.model.section.margins
+        let pageGap: CGFloat = 40
+
+        textView.textContainerInset = NSSize(width: margins.left, height: margins.top)
+
+        textView.minSize = NSSize(width: pageSize.width, height: pageSize.height)
+        textView.maxSize = NSSize(width: pageSize.width, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
+        textView.frame = NSRect(x: 0, y: 0, width: pageSize.width, height: pageSize.height)
+        textView.textContainer?.size = NSSize(width: pageSize.width, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = false
 
-        scrollView.documentView = textView
+        // Transparent background, PageContainerView will draw the pages
+        textView.drawsBackground = false
+        textView.backgroundColor = .clear
+
+        // Add exclusion paths for gaps between pages
+        var paths: [NSBezierPath] = []
+        for i in 1...500 {
+            let gapRect = NSRect(x: 0, y: CGFloat(i) * pageSize.height + CGFloat(i - 1) * pageGap, width: pageSize.width, height: pageGap)
+            paths.append(NSBezierPath(rect: gapRect))
+        }
+        textView.textContainer?.exclusionPaths = paths
+
+        let nsPageSize = NSSize(width: pageSize.width, height: pageSize.height)
+        let containerView = PageContainerView(textView: textView, pageSize: nsPageSize, pageGap: pageGap)
+        scrollView.documentView = containerView
         context.coordinator.textView = textView
         context.coordinator.loadFromModel()
         return scrollView
@@ -202,7 +226,10 @@ private enum WriteAttributedStringBridge {
                 result.append(NSAttributedString(string: "\n", attributes: paragraphAttributes(for: paragraph)))
             }
             for run in paragraph.runs {
-                result.append(NSAttributedString(string: run.text, attributes: attributes(for: run, paragraph: paragraph)))
+                var text = run.text
+                if run.isPageBreak { text = "\u{000C}" + text }
+                if text.isEmpty { continue }
+                result.append(NSAttributedString(string: text, attributes: attributes(for: run, paragraph: paragraph)))
             }
         }
         return result
@@ -244,9 +271,14 @@ private enum WriteAttributedStringBridge {
             attributed.enumerateAttributes(in: range, options: []) { attrs, runRange, _ in
                 let substring = (attributed.string as NSString).substring(with: runRange)
                 guard !substring.isEmpty else { return }
+                
+                let isPageBreak = substring.contains("\u{000C}")
+                let cleanedText = substring.replacingOccurrences(of: "\u{000C}", with: "")
+                if cleanedText.isEmpty && !isPageBreak { return }
+                
                 runs.append(
                     WriteRun(
-                        text: substring,
+                        text: cleanedText,
                         bold: isBold(attrs),
                         italic: isItalic(attrs),
                         underline: isUnderlined(attrs),
@@ -254,7 +286,8 @@ private enum WriteAttributedStringBridge {
                         fontSize: fontSize(attrs),
                         textColorHex: colorHex(attrs[.foregroundColor] as? NSColor),
                         highlightColorHex: colorHex(attrs[.backgroundColor] as? NSColor),
-                        verticalAlignment: verticalAlignment(attrs)
+                        verticalAlignment: verticalAlignment(attrs),
+                        isPageBreak: isPageBreak
                     )
                 )
             }
@@ -472,5 +505,92 @@ private final class RichTextView: NSTextView {
         }
         storage.endEditing()
         didChangeText()
+    }
+}
+
+private final class PageContainerView: NSView {
+    let textView: NSTextView
+    let pageSize: NSSize
+    let pageGap: CGFloat
+    let horizontalPadding: CGFloat = 40
+    let verticalPadding: CGFloat = 40
+
+    init(textView: NSTextView, pageSize: NSSize, pageGap: CGFloat) {
+        self.textView = textView
+        self.pageSize = pageSize
+        self.pageGap = pageGap
+        super.init(frame: .zero)
+        addSubview(textView)
+        
+        textView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(textViewFrameChanged), name: NSView.frameDidChangeNotification, object: textView)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func textViewFrameChanged() {
+        let minWidth = textView.frame.width + horizontalPadding * 2
+        let minHeight = textView.frame.height + verticalPadding * 2
+        
+        let targetWidth = max(minWidth, superview?.frame.width ?? minWidth)
+        let targetHeight = max(minHeight, superview?.frame.height ?? minHeight)
+        
+        if frame.size != NSSize(width: targetWidth, height: targetHeight) {
+            setFrameSize(NSSize(width: targetWidth, height: targetHeight))
+        }
+        needsLayout = true
+        needsDisplay = true
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        textViewFrameChanged()
+    }
+
+    override func resize(withOldSuperviewSize oldSize: NSSize) {
+        super.resize(withOldSuperviewSize: oldSize)
+        textViewFrameChanged()
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func layout() {
+        super.layout()
+        let x = max(horizontalPadding, (bounds.width - textView.frame.width) / 2)
+        textView.frame.origin = NSPoint(x: x, y: verticalPadding)
+    }
+    
+    override func draw(_ dirtyRect: NSRect) {
+        guard pageSize.height > 0 else { return }
+        
+        let totalHeight = textView.frame.height
+        let pageTotal = pageSize.height + pageGap
+        let numPages = max(1, Int(ceil(totalHeight / pageTotal)))
+        
+        let x = max(horizontalPadding, (bounds.width - pageSize.width) / 2)
+        
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.15)
+        shadow.shadowOffset = NSSize(width: 0, height: -2)
+        shadow.shadowBlurRadius = 4
+
+        for i in 0..<numPages {
+            let pageRect = NSRect(
+                x: x,
+                y: verticalPadding + CGFloat(i) * pageTotal,
+                width: pageSize.width,
+                height: pageSize.height
+            )
+            if pageRect.intersects(dirtyRect) {
+                NSGraphicsContext.saveGraphicsState()
+                shadow.set()
+                NSColor.textBackgroundColor.setFill()
+                pageRect.fill()
+                NSGraphicsContext.restoreGraphicsState()
+                
+                NSColor.separatorColor.setStroke()
+                pageRect.frame(withWidth: 1)
+            }
+        }
     }
 }

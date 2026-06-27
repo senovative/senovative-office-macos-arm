@@ -61,7 +61,8 @@ import Testing
       </w:body>
     </w:document>
     """
-    let paragraphs = try WordprocessingMLParser().parse(data: Data(xml.utf8))
+    let result = try WordprocessingMLParser().parse(data: Data(xml.utf8))
+    let paragraphs = result.paragraphs
 
     #expect(paragraphs.count == 1)
     #expect(paragraphs[0].runs.count == 1)

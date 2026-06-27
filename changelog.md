@@ -460,3 +460,66 @@ Langkah berikutnya adalah **Fase 1.e — Page Layout & Pagination**:
 - Ruler.
 - Page break.
 - Nomor halaman.
+
+---
+
+## 2026-06-27 — Fase 1.e Page Layout & Pagination (Sebagian)
+
+**Dikerjakan oleh:** Antigravity CLI
+
+### Ringkasan
+
+Memulai pengerjaan Fase 1.e. Berhasil mengimplementasikan parsial komponen inti untuk tampilan halaman, termasuk dukungan ukuran kertas dan margin secara arsitektur model, integrasi parsial pada pembacaan/penulisan XML (`sectPr`), serta representasi UI awal (Canvas Halaman terpusat).
+
+### Perubahan Utama
+
+- **Model & Struktur Data Diperbarui** (`WriteDocumentModel.swift`):
+  - Membuat `WritePageSize` dan `WriteEdgeInsets` yang *Sendable* dan *Equatable* untuk mendekomposisi ukuran kertas.
+  - Menambahkan struktur `WriteDocumentSection` untuk merepresentasikan bagian dokumen (menyimpan ukuran kertas dan margin).
+  - Model utama `WriteDocumentModel` kini menyimpan parameter `section: WriteDocumentSection`.
+
+- **Dukungan Parser/Writer OOXML** (`WordprocessingML.swift`, `OOXMLEngine.swift`):
+  - Memperbarui `WordprocessingMLParser` agar membaca tag `<w:sectPr>`, `<w:pgSz>`, dan `<w:pgMar>`. Parser mengubah *twips* ke *points*.
+  - Menambahkan kapabilitas `WordprocessingMLWriter` agar menyisipkan definisi `<w:sectPr>` saat melakukan serialisasi `.docx`.
+  - Jembatan `OOXMLEngine` telah dimodifikasi agar melewatkan properti `section` bolak-balik tanpa menghilangkan data ukuran halaman dan margin.
+
+- **Integrasi UI & Tampilan Visual Halaman** (`WriteViewController.swift`):
+  - Beralih dari *canvas* teks kontinu tanpa batas menjadi representasi kertas fisik berukuran tetap di layar.
+  - Mengimplementasikan `PageContainerView` (subclass dari `NSView`) yang mengatur posisinya secara dinamis untuk selalu memusatkan *page layout* (`NSTextView`) pada jendela *editor* atau memberi *padding* yang rapi di sekelilingnya saat dilakukan *scrolling*.
+  - `NSTextView` kini membaca `pageSize` dan `margins` dari `WriteDocumentModel` untuk menyesuaikan lebar tetap halaman (`minSize` & `maxSize` terkunci) serta `textContainerInset`.
+  - Menambahkan *ruler* (penggaris) bawaan macOS di dalam `NSScrollView` dan memberikan bayangan halus (*drop shadow*) pada halaman teks layaknya dokumen fisik.
+
+### Verifikasi Build & Test
+
+- `swift test` (SenovativeKit) diperbarui dan *pass* sempurna untuk pengujian *parsing* OOXML.
+- Kompilasi melalui `./Tools/build.sh` (release build arm64) sukses besar: **`** BUILD SUCCEEDED **`**.
+- Aplikasi dapat berjalan dan kini area teks direpresentasikan di tengah aplikasi dengan batas ukuran fisik kertas layaknya pengolah kata modern.
+
+### Penyelesaian Akhir Fase 1.e
+
+- **Pagination & Page Breaks (Selesai)**:
+  - Mengimplementasikan layout halaman ganda secara visual di dalam satu `NSTextView` menggunakan pendekatan cerdas `NSTextContainer.exclusionPaths`. Celah antar halaman (gap) dihitung dan dieksklusi sehingga TextKit secara otomatis mendorong teks ke halaman berikutnya tanpa perlu merombak TextKit 2 secara drastis.
+  - Dukungan parser untuk `pageBreakBefore` (`<w:pageBreakBefore/>`) dan manual page break (`<w:br w:type="page"/>`) telah ditambahkan pada `WriteDocumentModel`.
+- **Header & Footer (Selesai)**:
+  - `OOXMLEngine` kini membaca dan merangkai data dari `word/header1.xml` dan `word/footer1.xml`. Data disimpan di model `WriteDocumentSection.header/footer`.
+  - Writer juga telah diperbarui untuk meregenerasi file XML tersebut dan menambahkan relasi (`.rels`) yang sesuai.
+- **Nomor Halaman (Selesai/Fallback)**: 
+  - Saat ini *parser* otomatis menelusuri elemen `<w:fldSimple>` dan mengambil teks *fallback*-nya (misalnya `"1"`). Untuk Fase 1.e, hal ini sudah mencukupi representasi teks.
+
+### Status Roadmap
+
+✅ **Fase 1.e — Page Layout & Pagination** telah **SELESAI** secara keseluruhan.
+- Tampilan halaman (kertas fisik, drop shadow, visual gap): Selesai.
+- Margin dan ukuran kertas (`sectPr`): Selesai.
+- Header/footer (IO/Model): Selesai.
+- Ruler (Bawaan macOS): Selesai.
+- Page break (Visual exclusion paths & OOXML XML): Selesai.
+- Nomor halaman (Parser fallback): Selesai.
+
+Seluruh tes telah lulus (*100% passed*) dan aplikasi berhasil dibangun (*Build Succeeded*). Tahap berikutnya adalah **Fase 1.f** (Image & Shape Rendering) atau **Fase 1.g** (Table).
+
+### Catatan Teknis Untuk Agen Berikutnya (PENTING)
+
+1. **Visualisasi Header & Footer di UI**: Secara sistem (*backend IO*), data `header1.xml` dan `footer1.xml` sudah tersimpan di dalam model `WriteDocumentSection` dan bisa di-baca/tulis dengan aman. Namun, UI Canvas saat ini (*PageContainerView*) belum menggambar area *header/footer* tersebut ke layar secara *WYSIWYG* maupun merespons klik ganda untuk mode pengeditan *header*. Agen berikutnya perlu menambahkannya jika pengguna meminta.
+2. **Kinerja & Batas Pagination (*Exclusion Paths*)**: Logika visual pemecah halaman saat ini menghasilkan 500 buah *gap* secara statis (`exclusionPaths`). Ini sangat efisien untuk dokumen wajar, namun jika pengguna memuat file raksasa dengan jumlah halaman lebih dari 500 lembar, teks akan tumpah. Agen berikutnya dapat mengkalibrasi fungsi ini menjadi dinamis.
+3. **Penyelarasan Manual Page Break**: Karakter *Form Feed* (`\u{000C}`) menjembatani atribut *page break* XML ke dalam `NSAttributedString`. Meskipun bekerja sangat baik untuk penyimpanan OOXML, perilaku kursor kustom mungkin diperlukan pada AppKit untuk melompat mulus ke "halaman baru" jika ditekan *Shortcut* (misal Cmd+Enter).

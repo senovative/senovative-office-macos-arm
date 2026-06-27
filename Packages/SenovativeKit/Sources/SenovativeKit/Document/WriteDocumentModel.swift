@@ -14,6 +14,7 @@ public struct WriteRun: Equatable, Sendable {
     public var textColorHex: String?
     public var highlightColorHex: String?
     public var verticalAlignment: WriteVerticalAlignment
+    public var isPageBreak: Bool
 
     public init(
         text: String,
@@ -24,7 +25,8 @@ public struct WriteRun: Equatable, Sendable {
         fontSize: Double? = nil,
         textColorHex: String? = nil,
         highlightColorHex: String? = nil,
-        verticalAlignment: WriteVerticalAlignment = .baseline
+        verticalAlignment: WriteVerticalAlignment = .baseline,
+        isPageBreak: Bool = false
     ) {
         self.text = text
         self.bold = bold
@@ -35,6 +37,7 @@ public struct WriteRun: Equatable, Sendable {
         self.textColorHex = textColorHex
         self.highlightColorHex = highlightColorHex
         self.verticalAlignment = verticalAlignment
+        self.isPageBreak = isPageBreak
     }
 }
 
@@ -54,6 +57,7 @@ public struct WriteParagraph: Equatable, Sendable {
     public var leftIndent: Double?
     public var firstLineIndent: Double?
     public var list: WriteListStyle?
+    public var pageBreakBefore: Bool
 
     public init(
         runs: [WriteRun] = [],
@@ -63,7 +67,8 @@ public struct WriteParagraph: Equatable, Sendable {
         spacingAfter: Double? = nil,
         leftIndent: Double? = nil,
         firstLineIndent: Double? = nil,
-        list: WriteListStyle? = nil
+        list: WriteListStyle? = nil,
+        pageBreakBefore: Bool = false
     ) {
         self.runs = runs
         self.alignment = alignment
@@ -73,6 +78,7 @@ public struct WriteParagraph: Equatable, Sendable {
         self.leftIndent = leftIndent
         self.firstLineIndent = firstLineIndent
         self.list = list
+        self.pageBreakBefore = pageBreakBefore
     }
 
     /// Plain text of the paragraph with formatting flattened away.
@@ -103,13 +109,59 @@ public enum WriteListKind: String, Equatable, Sendable {
     case numbered
 }
 
+public struct WriteEdgeInsets: Equatable, Sendable {
+    public var top: Double
+    public var left: Double
+    public var bottom: Double
+    public var right: Double
+
+    public init(top: Double = 0, left: Double = 0, bottom: Double = 0, right: Double = 0) {
+        self.top = top
+        self.left = left
+        self.bottom = bottom
+        self.right = right
+    }
+}
+
+public struct WritePageSize: Equatable, Sendable {
+    public var width: Double
+    public var height: Double
+
+    public init(width: Double = 612, height: Double = 792) {
+        self.width = width
+        self.height = height
+    }
+}
+
+public struct WriteDocumentSection: Equatable, Sendable {
+    // Sizes in points
+    public var pageSize: WritePageSize
+    public var margins: WriteEdgeInsets
+    public var header: [WriteParagraph]
+    public var footer: [WriteParagraph]
+
+    public init(
+        pageSize: WritePageSize = WritePageSize(), // 8.5 x 11 inches
+        margins: WriteEdgeInsets = WriteEdgeInsets(top: 72, left: 72, bottom: 72, right: 72),
+        header: [WriteParagraph] = [],
+        footer: [WriteParagraph] = []
+    ) {
+        self.pageSize = pageSize
+        self.margins = margins
+        self.header = header
+        self.footer = footer
+    }
+}
+
 public struct WriteDocumentModel: OfficeDocumentModel {
     public var title: String
     public var paragraphs: [WriteParagraph]
+    public var section: WriteDocumentSection
 
-    public init(title: String, paragraphs: [WriteParagraph]) {
+    public init(title: String, paragraphs: [WriteParagraph], section: WriteDocumentSection = WriteDocumentSection()) {
         self.title = title
         self.paragraphs = paragraphs
+        self.section = section
     }
 
     /// Convenience for plain-text content: splits on newlines into single
