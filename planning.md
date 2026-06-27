@@ -142,9 +142,9 @@ report.docx                     (ZIP)
 | **1.i** | **Tulis `.doc`** | Serializer CFB (tulis compound file) + writer **MS-DOC** biner (FIB, stream `WordDocument`/`1Table`, format) dari model | Simpan ke `.doc` yang terbuka benar di MS Word |
 | **1.j** | Produktivitas & Export | Export **PDF** (PDFKit), Find & Replace, spell check (NSSpellChecker), word/char count, styles gallery, template, autosave/Versions, recent files, print dialog | Fitur sehari-hari setara Word dasar |
 | **1.k** | **Packaging & Rilis** | Ikon final, `build.sh` release arm64, **`SenovativeWrite.dmg`** (background + symlink /Applications), unsigned dulu (signing/notarisasi menyusul saat akun Apple Developer siap) | `.dmg` terpasang & jalan di Mac M-series lain |
-| **1.l** | **Page Setup** | Dialog Page Setup (ukuran kertas, orientasi, margin, scaling) yang mengedit `WriteDocumentSection`, re-layout kanvas live, dan round-trip ke `<w:sectPr>` | Ubah kertas/orientasi/margin via dialog → kanvas & cetak ikut berubah, tersimpan benar di `.docx` & terbuka sesuai di Word |
+| **1.l** | **Hardening & Fidelity** | Perbaikan arsitektur kritis (Multi-Container, O(N) Editor, Semantic Styles), Combo box **nama font**, **indikator "Page X of Y"**, **ruler selebar kertas** | Paginasi stabil, tidak lag, TOC MS Word berfungsi, UI Font/Ruler/Indikator jalan |
 | **1.m** | **Zoom In/Out** | Kontrol zoom tampilan kanvas (slider − / + + persen) di status bar ala Word, menu View → Zoom, dan gesture pinch/⌘-scroll | Perbesar/perkecil tampilan halaman tanpa mengubah isi dokumen; persen akurat, caret/scroll tetap benar |
-| **1.n** | **Font Family & Size (ribbon) + Indikator Halaman + Ruler** | Combo box **nama font** (theme/recent/all fonts, live preview) + **ukuran font** (preset list, editable) + grow/shrink di ribbon ala Word; **indikator "Page X of Y"** di status bar; **ruler selebar kertas & zoom-aware** (0 di margin, ikut skala/scroll) | Font & ukuran round-trip `<w:rFonts>`/`<w:sz>`; status bar tampil halaman aktif/total; ruler hanya menutupi kertas, 0 di margin kiri, tetap sejajar kertas di semua level zoom |
+| **1.n** | **Page Setup** | Dialog Page Setup (ukuran kertas, orientasi, margin, scaling) yang mengedit `WriteDocumentSection`, re-layout kanvas live, dan round-trip ke `<w:sectPr>` | Ubah kertas/orientasi/margin via dialog → kanvas & cetak ikut berubah, tersimpan benar di `.docx` & terbuka sesuai di Word |
 
 **Milestone Fase 1:** `SenovativeWrite.dmg` rilis-able yang baca/tulis **`.docx` & `.doc`** asli.
 
@@ -152,7 +152,7 @@ report.docx                     (ZIP)
 
 ---
 
-#### 🟦 Fase 1.l — Page Setup (detail)
+#### 🟦 Fase 1.n — Page Setup (detail)
 
 > Fitur tambahan pasca-1.k. Tujuan: pengguna bisa mengatur properti halaman (ukuran kertas, orientasi, margin, scaling) layaknya **File → Page Setup** di MS Word / dialog Page Setup macOS. Fondasinya sudah ada: `WriteDocumentSection` (di `SenovativeKit`) menyimpan `pageSize` & `margins`, parser/writer OOXML sudah baca/tulis `<w:pgSz>` & `<w:pgMar>`, dan pipeline print/PDF sudah memakai view halaman. Fase ini menyatukannya lewat satu dialog + re-layout live.
 
@@ -247,7 +247,7 @@ report.docx                     (ZIP)
 
 ---
 
-#### 🟦 Fase 1.n — Font Family & Size di Ribbon (detail)
+#### 🟦 Fase 1.l — Hardening & Fidelity (Font, Ruler, Paginasi) (detail)
 
 > Fitur tambahan pasca-1.m. Tujuan: kontrol **nama font** dan **ukuran font** langsung di ribbon (seperti grup Font di tab Home MS Word), bukan lewat Font Panel macOS. Fondasi sudah ada: `WriteRun.fontFamily` & `WriteRun.fontSize` tersimpan di model dan round-trip ke `<w:rFonts>`/`<w:sz>`; resolusi theme font (`majorHAnsi`/`minorHAnsi` → Calibri/Cambria) sudah ada dari fase fidelity. Fase ini menambah **UI inline** + apply ke selection/typing dan refleksi dua-arah.
 
@@ -281,7 +281,7 @@ report.docx                     (ZIP)
 - **⚠️ Urutan anak `<w:rPr>` harus diperbaiki saat fase ini.** CT_RPr adalah `xsd:sequence` dengan urutan: `rFonts → b → i → … → color → sz → szCs → u → … → shd → vertAlign`. Writer sekarang memancarkan urutan **tidak sesuai** (`rFonts, sz, color, shd, b, i, u, vertAlign`). Karena kontrol font menyentuh `rPr`, rapikan urutan ini sekalian (analog perbaikan urutan `<w:pPr>` di changelog 2026-06-28) lalu validasi dengan `scripts/office/validate.py` dari skill `docx`.
 - Font belum ter-install (ikon cloud di Word) di luar lingkup — cukup tampilkan font yang tersedia di sistem (`NSFontManager.availableFontFamilies`).
 
-**Tambahan dalam 1.n — Indikator Halaman ("Page X of Y"):**
+**Tambahan dalam 1.l — Indikator Halaman ("Page X of Y"):**
 
 > Menampilkan **halaman aktif dari total halaman** di status bar (kiri-bawah ala Word, mis. "Page 2 of 2"). Murni indikator tampilan; tidak mengubah dokumen.
 
@@ -292,7 +292,7 @@ report.docx                     (ZIP)
 - **DoD**: status bar menampilkan "Page X of Y" yang berubah benar saat mengetik/scroll; total cocok dengan jumlah halaman tercetak (uji dokumen 1, 2, dan banyak halaman).
 - **Risiko**: akurasi bergantung pada pagination `exclusionPaths` (lihat catatan changelog) — jika kelak pindah ke arsitektur multi-`NSTextContainer`, hitung total dari jumlah container yang terpakai.
 
-**Tambahan dalam 1.n — Perbaikan Ruler (selebar kertas + zoom-aware):**
+**Tambahan dalam 1.l — Perbaikan Ruler (selebar kertas + zoom-aware):**
 
 > Masalah sekarang: ruler memakai `NSScrollView` bawaan yang membentang **selebar window** (termasuk area gelap di luar kertas), dengan nol di tepi kiri view. Target ala Word: ruler **hanya menutupi area kertas**, dengan **0 di margin kiri**, batas margin/indent ditandai, dan **mengikuti posisi & skala kertas** saat di-zoom atau digulir.
 
@@ -308,9 +308,9 @@ report.docx                     (ZIP)
 - **DoD**: ruler horizontal hanya menutupi lebar kertas, 0 tepat di margin kiri, dan **tetap sejajar dengan kertas pada semua level zoom & saat digulir**; ruler vertikal serupa untuk tinggi halaman/margin atas-bawah.
 - **Risiko**: sinkronisasi ruler dengan `magnification` + multi-halaman (vertikal) bisa rumit; mulai dari ruler horizontal satu halaman, lalu rapikan vertikal/multi-halaman.
 
-**Tambahan dalam 1.n — Hardening hasil review DOCX/MS Word (skill `documents` OpenAI):**
+**Tambahan dalam 1.l — Hardening hasil review DOCX/MS Word:**
 
-> Review 2026-06-28 terhadap implementasi Fase 1.a–1.k menemukan beberapa gap fidelity yang tidak selalu tertangkap oleh unit test internal karena parser kita toleran. Sekalian dengan kontrol font/ruler/status bar, Fase 1.n harus menjadi titik rapih-rapih sebelum lanjut Slides/Sheets: writer harus lebih patuh skema OOXML, output lebih semantik seperti Word asli, dan `.doc` legacy tidak sekadar round-trip internal.
+> Review 2026-06-28 terhadap implementasi Fase 1.a–1.k menemukan beberapa gap fidelity yang tidak selalu tertangkap oleh unit test internal karena parser kita toleran. Sekalian dengan kontrol font/ruler/status bar, Fase 1.l harus menjadi titik rapih-rapih sebelum lanjut Slides/Sheets: writer harus lebih patuh skema OOXML, output lebih semantik seperti Word asli, dan `.doc` legacy tidak sekadar round-trip internal.
 
 - **Preservation isi `word/document.xml` (no data loss yang lebih nyata)**:
   - Saat ini preservation menyalin part tak dikenal, tetapi `word/document.xml` tetap digenerate ulang. Akibatnya elemen unsupported di body dapat hilang saat open→save: `w:bookmarkStart/End`, `w:commentRangeStart/End`, `w:commentReference`, `w:footnoteReference`, `w:endnoteReference`, `w:fldSimple`/field complex, content controls (`w:sdt`), tracked changes (`w:ins`/`w:del`), floating drawing (`wp:anchor`), textbox/shape kompleks, dan TOC.
@@ -357,7 +357,7 @@ report.docx                     (ZIP)
   - Tabel saat ini tidak mendukung penggabungan sel vertikal maupun horizontal. File `.docx` dengan tabel kompleks akan rusak saat dirender/disimpan.
   - Tambahkan `columnSpan` dan `rowSpan` pada `WriteTableCell`, lalu pastikan parser membaca `<w:gridSpan>` dan `<w:vMerge>` dari `<w:tcPr>`.
 
-- **Validation/render gate untuk semua perubahan Fase 1.n**:
+- **Validation/render gate untuk semua perubahan Fase 1.l**:
   - Setiap perubahan writer `.docx` wajib menjalankan unit test + validator OOXML (`scripts/office/validate.py` dari skill `docx`/dokumen bila tersedia) pada output yang mencakup heading, list, font, table, image, page setup, dan line break.
   - Render sample dan dokumen sintetis ke PNG memakai workflow skill `documents` (`render_docx.py`) lalu inspeksi visual: tidak ada clipping, overlap, tabel overflow, heading/list drift, atau page break aneh.
   - Tambah fixture regression kecil di `Tests/Corpus`/`Fixtures` untuk: semantic heading, table custom margin, landscape section, line spacing auto, unsupported body element preservation, dan `.doc` STSH.
