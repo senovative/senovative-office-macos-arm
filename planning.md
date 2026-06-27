@@ -160,9 +160,9 @@ report.docx                     (ZIP)
 
 | Kontrol | Nilai | Catatan |
 |---|---|---|
-| **Paper Size** | US Letter (8.5×11"), A4, Legal, Tabloid, + **Custom** (width/height) | Preset umum dulu; custom menyusul. Tampilkan ukuran mm/inci sesuai `Locale`. |
-| **Orientation** | Portrait / Landscape | Tukar width↔height; tulis `w:orient` di `<w:pgSz>`. |
-| **Margins** | Top / Bottom / Left / Right | Gaya Word; default 1" (1440 twips). Validasi margin tak melebihi kertas. |
+| **Paper Size** | US Letter, A4, Legal, Tabloid, + **Custom** (width/height) | Preset umum dulu; custom menyusul. Tampilkan mm/inci sesuai `Locale`. Nilai OOXML dalam **DXA/twips** (lihat tabel referensi di bawah). |
+| **Orientation** | Portrait / Landscape | Landscape = **tukar w/h** (width jadi sisi panjang) **dan** `w:orient="landscape"` di `<w:pgSz>`. |
+| **Margins** | Top / Bottom / Left / Right | Gaya Word; default 1" = **1440 twips**. Validasi margin tak melebihi kertas. |
 | **Scaling** | persen (mis. 100%) | Untuk cetak; map ke `NSPrintInfo.scalingFactor`. |
 | **Apply settings to** (accessory) | Whole Document / This Section | Scope perubahan. Awal: Whole Document (satu section). |
 | **Default…** (accessory) | tombol | Simpan setelan sebagai default dokumen baru. |
@@ -178,8 +178,24 @@ report.docx                     (ZIP)
    Accessory dipasang via `NSPageLayout.accessoryControllers` (atau `runModal(with: printInfo)` + accessory `NSViewController`). Alternatif (b) **dialog custom SwiftUI** disimpan sebagai cadangan jika butuh kontrol di luar yang diberikan panel native.
 3. **Model**: dialog membaca/menulis `WriteDocumentSection.pageSize` & `.margins` lewat `WriteDocumentState`; `updateChangeCount(.changeDone)` agar tersimpan.
 4. **Re-layout live**: saat section berubah, `DocumentCanvas` harus menghitung ulang lebar halaman tetap, `textContainer` size, `exclusionPaths` (gap antar lembar), dan `PageContainerView` (ukuran/posisi kertas). Saat ini parameter tsb dibaca sekali di `makeNSView` — perlu jalur update agar bisa berubah tanpa buka-ulang dokumen.
-5. **OOXML round-trip**: pastikan writer menulis `<w:pgSz w:w w:h w:orient>` & `<w:pgMar>` dari nilai dialog; tambah atribut `w:orient="landscape"` (saat ini belum ditulis). Parser sudah baca pgSz/pgMar; tambah baca `w:orient`.
+5. **OOXML round-trip**: writer menulis `<w:pgSz w:w w:h w:orient>` & `<w:pgMar>` dari nilai dialog; tambah `w:orient="landscape"` (belum ditulis). Parser sudah baca pgSz/pgMar; tambah baca `w:orient`. Pertahankan **urutan anak `<w:sectPr>`** (CT_SectPr): `headerReference`/`footerReference` → `pgSz` → `pgMar` → … (writer saat ini sudah urut demikian). **Selalu** tulis `pgSz` eksplisit (jangan andalkan default konsumen — Word/Google Docs berbeda default kertasnya).
 6. **Sinkron print/PDF**: `NSPrintInfo` (paper size, orientation, scaling, margins) diselaraskan dengan section saat `printDocument(_:)` / Export PDF, agar hasil cetak konsisten dengan tampilan.
+
+**Referensi unit & OOXML (dari skill `docx`):**
+
+- **Konversi**: `1 inci = 1440 twips (DXA) = 72 points`; jadi **points × 20 = twips**. Model menyimpan ukuran dalam **points** (`WriteDocumentSection`: US Letter 612×792 pt, margin 72 pt), writer mengubah ke twips. Validasi konversi ini saat menulis pgSz/pgMar.
+- **Ukuran kertas (DXA, portrait)**:
+
+  | Kertas | Width | Height |
+  |---|---|---|
+  | US Letter | 12240 | 15840 |
+  | A4 | 11906 | 16838 |
+  | Legal | 12240 | 20160 |
+  | Tabloid | 15840 | 24480 |
+
+  Landscape = tukar kolom Width/Height + `w:orient="landscape"` (mis. US Letter landscape → `w:w="15840" w:h="12240"`).
+- **Margin negatif/0**: izinkan 0 tapi waspadai konten keluar area cetak; macOS print clamp ke margin printer minimum.
+- **Validasi**: setiap menulis perubahan section, uji `.docx` hasil dengan validator skema dari skill `docx` (`scripts/office/validate.py`) — sama seperti yang dipakai untuk validitas writer di changelog 2026-06-28 — agar `<w:sectPr>` tetap valid lintas Word/Google Docs/LibreOffice.
 
 **Definition of Done:**
 - Dialog Page Setup bisa dibuka; ubah **paper size**, **orientation**, dan **margin** → kanvas editor langsung memantulkan perubahan (lebar/tinggi halaman & margin).
@@ -227,6 +243,7 @@ report.docx                     (ZIP)
 - `NSScrollView.magnification` berlaku pada `documentView` (`PageContainerView`) — pastikan ruler & exclusion-path pagination tetap konsisten setelah skala (uji di 50% & 200%).
 - Hindari mengubah font/`pointSize` model untuk "zoom" — itu mengubah dokumen, bukan tampilan; pemisahan zoom (tampilan) vs ukuran kertas (Fase 1.l) harus jelas.
 - Zoom adalah **per-window/preferensi**, jadi tidak memicu "edited"/`updateChangeCount` kecuali memang menulis `w:zoom`.
+- **Penyelarasan skill `docx`**: skill memperlakukan zoom sebagai **setelan tampilan**, bukan konten — di OOXML berada di `word/settings.xml` (`<w:zoom w:percent="…"/>` di dalam `<w:settings>`), terpisah dari `document.xml`. Konsekuensi: zoom **tidak boleh** mengubah `<w:sz>`/run apa pun; bila persistensi diaktifkan, tulis hanya `<w:zoom>` (round-trip `settings.xml` sudah dipertahankan oleh preservation di fase 1.g).
 
 ---
 
@@ -258,10 +275,11 @@ report.docx                     (ZIP)
 - Combo box **memantulkan** font & ukuran pada posisi caret; seleksi campur ditandai (field kosong).
 - Perubahan tersimpan ke `.docx` (`<w:rFonts w:ascii=…>`, `<w:sz w:val=…>`) dan terbuka sesuai di Word.
 
-**Catatan teknis & risiko:**
-- `<w:sz>` memakai **half-point** (mis. 11pt → `w:val="22"`); ukuran pecahan (10.5) → `21`. Pastikan konversi half-point sudah benar di writer (cek juga 10.5/5.5/6.5/7.5).
-- Theme Fonts harus tetap **resolve** ke typeface konkret saat disimpan (jangan bocorkan token tema) — sudah ditangani di fase fidelity; verifikasi saat user memilih "Calibri (Headings)".
-- Font yang belum ter-install (ikon cloud di Word) di luar lingkup — cukup tampilkan font yang tersedia di sistem.
+**Catatan teknis & risiko (diselaraskan dengan skill `docx`):**
+- **`<w:sz>` = half-point** (mis. 11pt → `w:val="22"`); pecahan 10.5pt → `21`. Writer sudah pakai `halfPoints(...)` — verifikasi preset pecahan (5.5/6.5/7.5/10.5). Untuk fidelity penuh, pasangkan **`<w:szCs>`** (ukuran complex-script) bernilai sama dengan `<w:sz>`.
+- **`<w:rFonts>`**: writer kini menulis `w:ascii` + `w:hAnsi`. Word menyimpan font di beberapa slot — set juga **`w:cs`** (complex script) ke family yang sama agar konsisten di semua skrip; theme font ditulis sebagai typeface konkret (sudah ditangani fase fidelity — jangan bocorkan token `minorHAnsi`/`majorHAnsi`).
+- **⚠️ Urutan anak `<w:rPr>` harus diperbaiki saat fase ini.** CT_RPr adalah `xsd:sequence` dengan urutan: `rFonts → b → i → … → color → sz → szCs → u → … → shd → vertAlign`. Writer sekarang memancarkan urutan **tidak sesuai** (`rFonts, sz, color, shd, b, i, u, vertAlign`). Karena kontrol font menyentuh `rPr`, rapikan urutan ini sekalian (analog perbaikan urutan `<w:pPr>` di changelog 2026-06-28) lalu validasi dengan `scripts/office/validate.py` dari skill `docx`.
+- Font belum ter-install (ikon cloud di Word) di luar lingkup — cukup tampilkan font yang tersedia di sistem (`NSFontManager.availableFontFamilies`).
 
 **Tambahan dalam 1.n — Indikator Halaman ("Page X of Y"):**
 
