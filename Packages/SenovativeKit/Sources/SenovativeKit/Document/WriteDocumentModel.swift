@@ -383,7 +383,7 @@ public enum WriteNamedStyle: String, CaseIterable, Equatable, Sendable {
             paragraph.spacingAfter = 6
             paragraph.leftIndent = nil
             paragraph.firstLineIndent = nil
-            paragraph.runs = styledRuns(paragraph.runs, fontSize: 17, bold: true, textColorHex: "365F91")
+            paragraph.runs = styledRuns(paragraph.runs, fontSize: 17, bold: true, textColorHex: "4F81BD")
         case .body:
             paragraph.alignment = .left
             paragraph.lineSpacing = nil

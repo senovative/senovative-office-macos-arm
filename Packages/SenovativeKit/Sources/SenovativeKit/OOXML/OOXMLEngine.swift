@@ -25,11 +25,30 @@ public enum OOXMLEngine {
             let ext = (target as NSString).pathExtension.lowercased()
             return (bytes, ext.isEmpty ? "png" : ext)
         }
+
+        // Resolve theme fonts (major/minor latin) and document run defaults
+        // (`<w:docDefaults>`) so body text inherits the typeface, size, and color
+        // Word would apply instead of falling back to the app's default font.
+        let themeFonts: ThemeFontParser?
+        if let themeData = try? archive.readPart(path: "word/theme/theme1.xml") {
+            let parser = ThemeFontParser()
+            _ = parser.parse(data: themeData)
+            themeFonts = parser
+        } else {
+            themeFonts = nil
+        }
+        var documentDefaults = WriteDocumentDefaults.none
+        if let stylesData = try? archive.readPart(path: "word/styles.xml") {
+            documentDefaults = StylesDefaultsParser(themeFonts: themeFonts).parse(data: stylesData)
+        }
+
         let parser = WordprocessingMLParser(
             hyperlinkResolver: { relationships[$0] },
-            imageResolver: imageResolver
+            imageResolver: imageResolver,
+            fontThemeResolver: { themeFonts?.resolve(token: $0) }
         )
         let result = try parser.parse(data: documentData)
+        let resolvedBlocks = documentDefaults.applied(to: result.blocks)
         var section = result.section
 
         if let headerData = try? archive.readPart(path: "word/header1.xml") {
@@ -42,7 +61,7 @@ public enum OOXMLEngine {
 
         return WriteDocumentModel(
             title: "Parsed Document",
-            blocks: result.blocks,
+            blocks: resolvedBlocks,
             section: section,
             sourcePackage: OOXMLPackageSnapshot(parts: originalParts)
         )

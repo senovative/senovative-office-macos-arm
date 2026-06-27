@@ -24,7 +24,10 @@ let package = Package(
         ),
         .testTarget(
             name: "SenovativeKitTests",
-            dependencies: ["SenovativeKit"]
+            dependencies: ["SenovativeKit"],
+            resources: [
+                .copy("Fixtures"),
+            ]
         ),
     ]
 )

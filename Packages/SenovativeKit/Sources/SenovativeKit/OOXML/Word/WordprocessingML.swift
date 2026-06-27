@@ -4,7 +4,7 @@ import Foundation
 /// (paragraphs and tables) plus formatted runs.
 ///
 /// Scope: paragraphs (`<w:p>`), tables (`<w:tbl>`/`<w:tr>`/`<w:tc>`), runs
-/// (`<w:r>`), text (`<w:t>`), tabs (`<w:tab>`), page breaks (`<w:br type=page>`),
+/// (`<w:r>`), text (`<w:t>`), tabs (`<w:tab>`), line breaks (`<w:br>`), page breaks (`<w:br type=page>`),
 /// hyperlinks (`<w:hyperlink r:id>`), the character toggles inside a run's
 /// `<w:rPr>` (bold/italic/underline, fonts, size, color, highlight, vertAlign),
 /// and paragraph properties (`<w:jc>`, `<w:spacing>`, `<w:ind>`, `<w:numPr>`).
@@ -18,6 +18,8 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
     private let hyperlinkResolver: (String) -> String?
     /// Resolves an image relationship id (`r:embed`) to its bytes and extension.
     private let imageResolver: (String) -> (data: Data, fileExtension: String)?
+    /// Resolves a theme font token (e.g. `minorHAnsi`) to a concrete typeface.
+    private let fontThemeResolver: (String) -> String?
 
     // Table assembly state (single level of nesting).
     private var inTable = false
@@ -69,10 +71,12 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
 
     init(
         hyperlinkResolver: @escaping (String) -> String? = { _ in nil },
-        imageResolver: @escaping (String) -> (data: Data, fileExtension: String)? = { _ in nil }
+        imageResolver: @escaping (String) -> (data: Data, fileExtension: String)? = { _ in nil },
+        fontThemeResolver: @escaping (String) -> String? = { _ in nil }
     ) {
         self.hyperlinkResolver = hyperlinkResolver
         self.imageResolver = imageResolver
+        self.fontThemeResolver = fontThemeResolver
     }
 
     func parse(data: Data) throws -> (blocks: [WriteBlock], section: WriteDocumentSection) {
@@ -208,9 +212,15 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             if inRun && inRunProperties { runUnderline = isUnderlineOn(attributeDict) }
         case "rFonts":
             if inRun && inRunProperties {
-                runFontFamily = attribute(attributeDict, "ascii")
+                if let literal = attribute(attributeDict, "ascii")
                     ?? attribute(attributeDict, "hAnsi")
-                    ?? attribute(attributeDict, "cs")
+                    ?? attribute(attributeDict, "cs") {
+                    runFontFamily = literal
+                } else if let token = attribute(attributeDict, "asciiTheme")
+                    ?? attribute(attributeDict, "hAnsiTheme")
+                    ?? attribute(attributeDict, "cstheme") {
+                    runFontFamily = fontThemeResolver(token)
+                }
             }
         case "sz":
             if inRun && inRunProperties, let value = doubleValue(attribute(attributeDict, "val")) {
@@ -231,8 +241,16 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
         case "tab":
             if inRun { runText += "\t" }
         case "br":
-            if inRun, attribute(attributeDict, "type") == "page" {
-                runIsPageBreak = true
+            if inRun {
+                if attribute(attributeDict, "type") == "page" {
+                    runIsPageBreak = true
+                } else {
+                    // Plain line break (Shift+Enter): a soft break within the
+                    // paragraph. U+2028 renders as a line break in TextKit and is
+                    // not treated as a paragraph boundary, so it round-trips back
+                    // to `<w:br/>` instead of becoming a separate `<w:p>`.
+                    runText += "\u{2028}"
+                }
             }
         case "t":
             if inRun { inText = true }
@@ -325,7 +343,7 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
                 spacingAfter: paragraphSpacingAfter,
                 leftIndent: paragraphLeftIndent,
                 firstLineIndent: paragraphFirstLineIndent,
-                list: listStyle(numberingId: paragraphNumberingId, level: paragraphListLevel),
+                list: listStyle(numberingId: paragraphNumberingId, level: paragraphListLevel, styleName: paragraphStyleName),
                 pageBreakBefore: paragraphPageBreakBefore
             )
             if let style = paragraphStyleName {
@@ -440,10 +458,20 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
         }
     }
 
-    private func listStyle(numberingId: Int?, level: Int?) -> WriteListStyle? {
-        guard let numberingId else { return nil }
-        let kind: WriteListKind = numberingId == 1 ? .bullet : .numbered
-        return WriteListStyle(kind: kind, level: level ?? 0)
+    private func listStyle(numberingId: Int?, level: Int?, styleName: String?) -> WriteListStyle? {
+        if let numberingId {
+            let kind: WriteListKind = numberingId == 1 ? .bullet : .numbered
+            return WriteListStyle(kind: kind, level: level ?? 0)
+        }
+        // Many documents carry numbering on a list paragraph style instead of
+        // directly on the paragraph (e.g. `<w:pStyle w:val="ListBullet"/>` whose
+        // styles.xml definition holds the `<w:numPr>`). We don't fully resolve
+        // styles.xml numbering, so infer the marker from the well-known style id.
+        if let styleName = styleName?.replacingOccurrences(of: " ", with: "") {
+            if styleName.contains("ListBullet") { return WriteListStyle(kind: .bullet, level: level ?? 0) }
+            if styleName.contains("ListNumber") { return WriteListStyle(kind: .numbered, level: level ?? 0) }
+        }
+        return nil
     }
 }
 
@@ -642,8 +670,11 @@ enum WordprocessingMLWriter {
 
     private static func writeTable(_ table: WriteTable, links: [String: String], context: DrawingContext) -> String {
         let columns = max(1, table.columnCount)
-        let usableWidth = 9360 // ~6.5in in twips
+        let usableWidth = 9360 // ~6.5in in twips (US Letter content width)
         let colWidth = usableWidth / columns
+        // Table width must equal the exact sum of the column widths, not a
+        // rounded constant — integer division can leave a 1-twip gap otherwise.
+        let totalWidth = colWidth * columns
 
         var grid = ""
         for _ in 0..<columns {
@@ -654,7 +685,7 @@ enum WordprocessingMLWriter {
 
                 <w:tbl>
                     <w:tblPr>
-                        <w:tblW w:w="0" w:type="auto"/>
+                        <w:tblW w:w="\(totalWidth)" w:type="dxa"/>
                         <w:tblBorders>
                             <w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/>
                             <w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/>
@@ -663,6 +694,12 @@ enum WordprocessingMLWriter {
                             <w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/>
                             <w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>
                         </w:tblBorders>
+                        <w:tblCellMar>
+                            <w:top w:w="80" w:type="dxa"/>
+                            <w:left w:w="120" w:type="dxa"/>
+                            <w:bottom w:w="80" w:type="dxa"/>
+                            <w:right w:w="120" w:type="dxa"/>
+                        </w:tblCellMar>
                     </w:tblPr>
                     <w:tblGrid>\(grid)
                     </w:tblGrid>
@@ -707,15 +744,28 @@ enum WordprocessingMLWriter {
         if run.isPageBreak {
             inner += "\n                <w:br w:type=\"page\"/>"
         }
-        let segments = run.text.components(separatedBy: "\t")
-        for (index, segment) in segments.enumerated() {
-            if index > 0 {
-                inner += "\n                <w:tab/>"
-            }
-            if !segment.isEmpty {
-                inner += "\n                <w:t xml:space=\"preserve\">\(escape(segment))</w:t>"
+        // Walk the run text, emitting <w:t> for plain text, <w:tab/> for tabs,
+        // and <w:br/> for soft line breaks (U+2028).
+        var buffer = ""
+        func flushText() {
+            if !buffer.isEmpty {
+                inner += "\n                <w:t xml:space=\"preserve\">\(escape(buffer))</w:t>"
+                buffer = ""
             }
         }
+        for character in run.text {
+            switch character {
+            case "\t":
+                flushText()
+                inner += "\n                <w:tab/>"
+            case "\u{2028}":
+                flushText()
+                inner += "\n                <w:br/>"
+            default:
+                buffer.append(character)
+            }
+        }
+        flushText()
         return inner
     }
 
@@ -852,14 +902,18 @@ enum WordprocessingMLWriter {
     }
 
     private static func paragraphPropertyParts(for paragraph: WriteParagraph) -> [String] {
+        // Children of <w:pPr> must follow the CT_PPr schema order, otherwise
+        // strict consumers (Google Docs, validators) reject the part:
+        //   pageBreakBefore -> numPr -> spacing -> ind -> jc
         var parts: [String] = []
-
-        if paragraph.alignment != .left {
-            parts.append("<w:jc w:val=\"\(alignmentValue(paragraph.alignment))\"/>")
-        }
 
         if paragraph.pageBreakBefore {
             parts.append("<w:pageBreakBefore/>")
+        }
+
+        if let list = paragraph.list {
+            let numId = list.kind == .bullet ? 1 : 2
+            parts.append("<w:numPr><w:ilvl w:val=\"\(list.level)\"/><w:numId w:val=\"\(numId)\"/></w:numPr>")
         }
 
         var spacingAttributes: [String] = []
@@ -892,9 +946,8 @@ enum WordprocessingMLWriter {
             parts.append("<w:ind \(indentAttributes.joined(separator: " "))/>")
         }
 
-        if let list = paragraph.list {
-            let numId = list.kind == .bullet ? 1 : 2
-            parts.append("<w:numPr><w:ilvl w:val=\"\(list.level)\"/><w:numId w:val=\"\(numId)\"/></w:numPr>")
+        if paragraph.alignment != .left {
+            parts.append("<w:jc w:val=\"\(alignmentValue(paragraph.alignment))\"/>")
         }
 
         return parts

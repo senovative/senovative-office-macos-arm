@@ -957,3 +957,90 @@ Memperbaiki *regresi* visual (*bugfix*) terkait palet warna pada dokumen yang be
 - **Saran Solusi Berikutnya**: 
   Jangan mengandalkan *single* `NSTextView` yang panjangnya infinit/tak terhingga dengan trik jalur eksklusi (`exclusionPaths`).
   **Gunakan arsitektur multi-container**: Satu `NSTextStorage` / `NSTextLayoutManager`, tetapi dipetakan ke *beberapa* objek `NSTextContainer` berbeda yang masing-masing secara spesifik merepresentasikan *satu lembar* kertas fisik. Setiap lembar kertas memiliki tinggi mutlak `pageSize.height - margins.top - margins.bottom`. Ketika teks di `NSTextContainer` pertama meluap, layout manager otomatis akan melanjutkannya ke `NSTextContainer` milik halaman kedua secara absolut, mematikan 100% bug teks menabrak batas margin!
+
+---
+
+## 2026-06-28 — Fidelity Tampilan MS Word: docDefaults/Theme Font + Fix Paginasi (TextKit 1)
+
+**Dikerjakan oleh:** Claude Code
+
+### Ringkasan
+
+Menutup dua celah fidelity agar tampilan dokumen (khususnya sample `sample/UAS_Project_Analisis_Sentimen.docx`) menyamai Microsoft Word: (1) resolusi **document defaults + font tema** sehingga teks badan mewarisi typeface & ukuran yang benar, dan (2) perbaikan **bug paginasi** dengan memaksa TextKit 1 agar `exclusionPaths` dihormati.
+
+### Perubahan Utama
+
+- **Resolusi `word/styles.xml` docDefaults + `word/theme/theme1.xml` (`Packages/SenovativeKit`)**:
+  - File baru `OOXML/Word/WordStyles.swift`:
+    - `ThemeFontParser` — mengekstrak typeface latin `majorFont`/`minorFont` dari fontScheme tema.
+    - `StylesDefaultsParser` — mengekstrak `<w:docDefaults><w:rPrDefault>` (font/size/color default), me-resolve token tema (`minorHAnsi` dst.) ke nama typeface konkret.
+    - `WriteDocumentDefaults` — mengisi font/size/color yang `nil` pada setiap run (termasuk di dalam sel tabel). Formatting eksplisit run selalu menang.
+  - `WordprocessingMLParser`: `rFonts` kini me-resolve atribut tema (`w:asciiTheme`/`w:hAnsiTheme`/`w:cstheme`) ke typeface konkret via resolver, bukan hanya `w:ascii`.
+  - `OOXMLEngine.readWord`: memuat theme1.xml + styles.xml, lalu menerapkan default ke seluruh blok setelah parse.
+  - **Efek pada sample**: teks badan yang sebelumnya `size=0.0`/`font=nil` kini resolve ke **Cambria 11pt** (minorHAnsi), heading resolve ke **Calibri** (majorHAnsi); judul tetap bold 22pt warna `#365F91`. Ini cocok dengan rendering Word untuk tema legacy 2010 dokumen tsb.
+
+- **Fix Bug Paginasi (`Apps/SenovativeWrite/Sources/WriteViewController.swift`)**:
+  - Akar masalah: hitungan koordinat `gapRect`/`exclusionPaths` **sudah benar**; yang salah adalah TextKit 2 (`usingTextLayoutManager: true`) menghormati `exclusionPaths` hanya sebagian saat runtime.
+  - Solusi minimal & tepat sasaran: paksa **TextKit 1** (`usingTextLayoutManager: false`). Seluruh view tidak memakai API TextKit 2, sehingga aman; `exclusionPaths` kini dihormati penuh dan band margin-bawah/gap/margin-atas antar lembar dirender sesuai rancangan.
+  - Catatan: ini lebih ringan & berisiko rendah dibanding rewrite multi-`NSTextContainer` yang disarankan agen sebelumnya; pendekatan multi-container tetap valid sebagai opsi jika kelak butuh fitur TextKit 2.
+
+### Test
+
+- **Unit test fidelity baru** (`Packages/SenovativeKit/Tests/.../SampleFidelityTests.swift`) memuat fixture `.docx` Word asli (disalin ke `Tests/.../Fixtures/`) dan memverifikasi: body = Cambria 11pt, semua run punya size > 0, heading mempertahankan 22pt/`#365F91`, dan tidak ada token tema yang bocor (semua font ter-resolve).
+- `swift test` (SenovativeKit): **23 test lulus** (19 lama + 4 fidelity). `SenovativeUI`: 1 lulus.
+- `xcodebuild ... -configuration Debug -arch arm64`: **BUILD SUCCEEDED**.
+
+### Catatan Untuk Agen Berikutnya
+
+- Verifikasi visual paginasi belum bisa di-screenshot otomatis di environment headless ini (jendela frontmost tapi tidak ter-composite ke `screencapture`; System Events Accessibility ditolak). Perlu konfirmasi mata manusia: buka sample, scroll lewat batas halaman pertama, pastikan teks tidak menabrak margin bawah/atas antar lembar.
+- Default **paragraph spacing** dari docDefaults (`after=200`/10pt, `line=276`/1.15) belum diterapkan — masih celah fidelity layout vertikal berikutnya.
+- `test_parser.swift` di root sudah usang (memakai API lama `OOXMLEngine.load`/`model.blocks`); kandidat dihapus/diperbarui.
+
+---
+
+## 2026-06-28 — Fidelity: Line Break, List dari Named Style, & Validitas OOXML (dari skill `docx`)
+
+**Dikerjakan oleh:** Claude Code (Opus 4.8)
+
+### Ringkasan
+
+Tiga perbaikan fidelity/validitas berdasarkan temuan dari sample Word asli (`sample/UAS_Project_Analisis_Sentimen.docx`) dan adopsi aturan validitas OOXML dari skill `docx`:
+1. **Line break `<w:br/>`** dalam satu paragraf kini dirender (sebelumnya diabaikan → teks menempel).
+2. **List berbasis named paragraph style** (`<w:pStyle w:val="ListBullet"/>`) kini dikenali sebagai bullet/numbered (sebelumnya tampil tanpa marker).
+3. **Writer OOXML dirapikan agar lolos validator skema** (urutan `<w:pPr>`, lebar tabel DXA, cell margins).
+
+### Perubahan Utama
+
+- **Line break polos** (`OOXML/Word/WordprocessingML.swift`):
+  - Parser: `<w:br/>` non-page kini menyisipkan `\u{2028}` (LINE SEPARATOR) ke teks run. Karakter ini dirender TextKit sebagai line break **dalam** paragraf dan tidak memecah paragraf di `model(from:)` (yang hanya split di `\n`), sehingga round-trip kembali ke `<w:br/>`, bukan berubah jadi `<w:p>` terpisah.
+  - Writer: serialisasi teks run ditulis ulang menjadi pemindaian per-karakter yang memancarkan `<w:t>` untuk teks, `<w:tab/>` untuk `\t`, dan `<w:br/>` untuk `\u{2028}`.
+
+- **List dari named style** (`WordprocessingML.swift`):
+  - `listStyle(numberingId:level:styleName:)` kini menyimpulkan marker dari styleId list yang umum saat tidak ada `<w:numPr>` langsung di paragraf: `ListBullet` → bullet, `ListNumber` → numbered. (Inferensi berbasis styleId, bukan resolusi penuh `numPr` dari `styles.xml`.)
+
+- **Render marker list di editor** (`Apps/SenovativeWrite/Sources/WriteViewController.swift`):
+  - Akar masalah: TextKit 1 **tidak** menggambar marker `NSTextList` otomatis dari paragraph style — glyph marker harus ada di text storage. Sebelumnya hanya `style.textLists` di-set, jadi bullet tak pernah tampil (baik saat buka file maupun toggle in-app).
+  - Bridge kini menyisipkan `\t<marker>\t` (• untuk bullet, `n.` untuk numbered, dengan counter berurutan) di awal tiap paragraf list, ditandai atribut `listMarkerKey`. Saat membangun model kembali (`paragraph(from:)`), run bertanda marker di-skip sehingga tidak ikut tersimpan ke `<w:t>` — status list dipulihkan dari paragraph style, bukan dari teks marker (round-trip aman).
+  - `applyList` (toggle ribbon) ditulis ulang: snapshot range paragraf lalu mutasi back-to-front, hapus marker lama (dedup), set `textLists`, sisipkan marker baru — sehingga list yang dibuat di app langsung tampil bullet/nomor.
+
+- **Warna Heading 2** (`Document/WriteDocumentModel.swift`):
+  - `WriteNamedStyle.heading2` diperbaiki dari `365F91` (gelap, salah) ke `4F81BD` — warna `accent1` Heading 2 standar Word 2010, cocok dengan rendering Word pada sample. Heading 1 tetap `365F91` (themeShade BF) dan Title tetap `17365D`.
+
+- **Validitas OOXML writer — adopsi aturan skill `docx`** (`WordprocessingML.swift`):
+  - **Urutan elemen `<w:pPr>`** diperbaiki ke urutan skema CT_PPr: `pageBreakBefore → numPr → spacing → ind → jc` (sebelumnya `jc` diemit pertama dan `numPr` terakhir — melanggar skema, berisiko ditolak Google Docs/validator).
+  - **Lebar tabel** kini `<w:tblW w:w="<jumlah kolom>" w:type="dxa"/>` (sebelumnya `w:w="0" w:type="auto"`); `tblW` = `colWidth × columns` agar persis sama dengan jumlah `gridCol`/`tcW` (dual-width).
+  - **Cell margins** `<w:tblCellMar>` (80/120 dxa) ditambahkan untuk padding sel yang terbaca.
+  - Dikonfirmasi sudah sesuai skill sebelumnya: shading `w:val="clear"`, `xml:space="preserve"`, list via `numPr` (bukan unicode bullet), default page size US Letter (612×792pt) + margin 1".
+
+### Verifikasi Build & Test
+
+- `swift test` (SenovativeKit): **25 test lulus** (23 lama + `wordRoundTripPreservesLineBreaks` + `listBulletStyleIsRecognizedAsBulletList`).
+- **Validasi eksternal**: `.docx` hasil engine (heading, bullet, numbered, line break, tabel 2×2) divalidasi dengan `scripts/office/validate.py` dari skill `docx` → **`All validations PASSED!`**.
+- `xcodebuild -workspace SenovativeOffice.xcworkspace -scheme SenovativeWrite -configuration Debug -arch arm64`: **BUILD SUCCEEDED**.
+- **Verifikasi visual** (buka `sample/UAS_Project_Analisis_Sentimen.docx` di app): line break "Mata Kuliah / Bobot" pindah baris; daftar berpoin tampil dengan bullet `•` + indent; Heading 2 biru terang `4F81BD` cocok dengan MS Word.
+
+### Catatan Untuk Agen Berikutnya
+
+- Writer belum menulis **`<w:pStyle>` semantik** — Heading/Title masih di-flatten ke formatting langsung. Akibatnya **Table of Contents** dan styles gallery OOXML penuh belum mungkin. Ini gap berikutnya (sejalan catatan 1.j).
+- Aturan skill `docx` yang **belum** diadopsi karena butuh model/UI baru: tracked changes (`<w:ins>`/`<w:del>`), comments, footnotes, multi-column, internal hyperlink/bookmark.
+- Inferensi list dari styleId hanya menangani style list standar Word; resolusi `<w:numPr>` lewat `styles.xml` secara penuh perlu untuk style list custom.

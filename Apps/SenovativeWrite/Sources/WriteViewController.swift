@@ -168,8 +168,13 @@ private struct DocumentCanvas: NSViewRepresentable {
         scrollView.hasHorizontalRuler = true
         scrollView.rulersVisible = true
 
-        // Force a TextKit 2 (NSTextLayoutManager) backing store.
-        let textView = RichTextView(usingTextLayoutManager: true)
+        // Force a TextKit 1 (NSLayoutManager) backing store. Pagination relies on
+        // `textContainer.exclusionPaths` to carve out the bottom-margin / page-gap /
+        // top-margin band between sheets; TextKit 2's NSTextLayoutManager honors
+        // those paths only partially at runtime, letting text spill across the page
+        // break. TextKit 1 applies exclusion paths reliably, so the page-gap math
+        // below renders as authored. Nothing in this view uses the TextKit 2 API.
+        let textView = RichTextView(usingTextLayoutManager: false)
         textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = true
@@ -275,13 +280,34 @@ private enum WriteAttributedStringBridge {
         [.font: defaultFont, .foregroundColor: NSColor.black]
     }
 
+    /// Tags the leading `\t<marker>\t` glyphs that visualise a list item. The
+    /// marker text lives in the storage (TextKit 1 does not auto-draw NSTextList
+    /// markers), but it is excluded from the saved model via this attribute.
+    static let listMarkerKey = NSAttributedString.Key("SenovativeListMarker")
+
+    /// Range of the synthetic list-marker glyphs at the start of `paragraph`, if any.
+    static func leadingListMarkerRange(in storage: NSTextStorage, paragraph: NSRange) -> NSRange? {
+        guard paragraph.length > 0, paragraph.location < storage.length else { return nil }
+        var effective = NSRange(location: 0, length: 0)
+        guard storage.attribute(listMarkerKey, at: paragraph.location, effectiveRange: &effective) != nil else { return nil }
+        let end = min(NSMaxRange(effective), NSMaxRange(paragraph))
+        return NSRange(location: paragraph.location, length: end - paragraph.location)
+    }
+
     static func attributedString(from model: WriteDocumentModel) -> NSAttributedString {
         let result = NSMutableAttributedString()
+        var numberedItem = 0
         for block in model.blocks {
             switch block {
             case let .paragraph(paragraph):
-                appendParagraph(paragraph, tableBlock: nil, into: result)
+                if let list = paragraph.list, list.kind == .numbered {
+                    numberedItem += 1
+                } else {
+                    numberedItem = 0
+                }
+                appendParagraph(paragraph, tableBlock: nil, itemNumber: numberedItem, into: result)
             case let .table(table):
+                numberedItem = 0
                 appendTable(table, into: result)
             }
         }
@@ -300,8 +326,15 @@ private enum WriteAttributedStringBridge {
         return result
     }
 
-    private static func appendParagraph(_ paragraph: WriteParagraph, tableBlock: NSTextTableBlock?, into result: NSMutableAttributedString) {
+    private static func appendParagraph(_ paragraph: WriteParagraph, tableBlock: NSTextTableBlock?, itemNumber: Int = 0, into result: NSMutableAttributedString) {
         let style = paragraphStyle(for: paragraph, tableBlock: tableBlock)
+        if let list = paragraph.list {
+            let marker = list.kind == .bullet ? "•" : "\(itemNumber)."
+            var markerAttrs = defaultTypingAttributes
+            markerAttrs[.paragraphStyle] = style
+            markerAttrs[listMarkerKey] = true
+            result.append(NSAttributedString(string: "\t\(marker)\t", attributes: markerAttrs))
+        }
         for run in paragraph.runs {
             if let attachment = attachment(for: run) {
                 let attr = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
@@ -414,6 +447,9 @@ private enum WriteAttributedStringBridge {
         var runs: [WriteRun] = []
         if range.length > 0 {
             attributed.enumerateAttributes(in: range, options: []) { attrs, runRange, _ in
+                // Drop the synthetic list-marker glyphs; the list state itself is
+                // recovered from the paragraph style, not from this text.
+                if attrs[listMarkerKey] != nil { return }
                 if let attachment = attrs[.attachment] as? NSTextAttachment {
                     if let imageAttachment = attachment as? WriteImageAttachment {
                         runs.append(WriteRun(text: "", image: imageAttachment.writeImage))
@@ -962,14 +998,36 @@ final class RichTextView: NSTextView {
         let selected = selectedRange()
         let fullText = storage.string as NSString
         let paragraphRange = fullText.paragraphRange(for: selected.length > 0 ? selected : NSRange(location: selected.location, length: 0))
-        storage.beginEditing()
+
+        // Snapshot paragraph ranges first, then mutate back-to-front so the
+        // marker glyphs we insert/remove don't invalidate ranges we haven't
+        // processed yet.
+        var ranges: [NSRange] = []
         fullText.enumerateSubstrings(in: paragraphRange, options: [.byParagraphs, .substringNotRequired]) { _, range, _, _ in
-            let style = (storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
+            ranges.append(range)
+        }
+
+        storage.beginEditing()
+        var number = ranges.count
+        for var range in ranges.reversed() {
+            // Replace any existing marker so repeated toggles don't stack them.
+            if let existing = WriteAttributedStringBridge.leadingListMarkerRange(in: storage, paragraph: range) {
+                storage.deleteCharacters(in: existing)
+                range.length -= existing.length
+            }
+            let base = (storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
                 ?? NSMutableParagraphStyle()
-            style.textLists = [NSTextList(markerFormat: kind == .bullet ? .disc : .decimal, options: 0)]
-            if style.headIndent == 0 { style.headIndent = 36 }
-            if style.firstLineHeadIndent == 0 { style.firstLineHeadIndent = -18 }
-            storage.addAttribute(.paragraphStyle, value: style, range: range)
+            base.textLists = [NSTextList(markerFormat: kind == .bullet ? .disc : .decimal, options: 0)]
+            if base.headIndent == 0 { base.headIndent = 36 }
+            if base.firstLineHeadIndent == 0 { base.firstLineHeadIndent = -18 }
+            storage.addAttribute(.paragraphStyle, value: base, range: range)
+
+            let marker = kind == .bullet ? "•" : "\(number)."
+            var markerAttrs = WriteAttributedStringBridge.defaultTypingAttributes
+            markerAttrs[.paragraphStyle] = base
+            markerAttrs[WriteAttributedStringBridge.listMarkerKey] = true
+            storage.insert(NSAttributedString(string: "\t\(marker)\t", attributes: markerAttrs), at: range.location)
+            number -= 1
         }
         storage.endEditing()
         didChangeText()

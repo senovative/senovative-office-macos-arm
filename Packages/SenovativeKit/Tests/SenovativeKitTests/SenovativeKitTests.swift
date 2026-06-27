@@ -176,6 +176,25 @@ import Testing
     #expect(parsed.paragraphs[0].runs[0].text == "Name\tValue")
 }
 
+@Test func wordRoundTripPreservesLineBreaks() throws {
+    // A soft line break (`<w:br/>`, Shift+Enter) keeps both fragments in the
+    // same paragraph instead of splitting into separate `<w:p>` elements.
+    let model = WriteDocumentModel(title: "Breaks", paragraphs: [
+        WriteParagraph(runs: [
+            WriteRun(text: "Mata Kuliah: Analisis Sentimen\u{2028}", bold: true),
+            WriteRun(text: "Bobot: 100%"),
+        ]),
+    ])
+
+    let data = try OOXMLEngine.writeWord(model: model)
+    let parsed = try OOXMLEngine.readWord(from: data)
+
+    #expect(parsed.paragraphs.count == 1)
+    #expect(parsed.paragraphs[0].runs[0].text == "Mata Kuliah: Analisis Sentimen\u{2028}")
+    #expect(parsed.paragraphs[0].runs[0].bold)
+    #expect(parsed.paragraphs[0].runs[1].text == "Bobot: 100%")
+}
+
 @Test func wordRoundTripPreservesTables() throws {
     let table = WriteTable(rows: [
         WriteTableRow(cells: [
