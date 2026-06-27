@@ -741,3 +741,54 @@ Tahap berikutnya adalah maju ke Fase 1.i (Tulis `.doc`).
 
 1. **Format teks MS-DOC**: Saat ini `MSDocParser` hanya mengekstrak teks mentah dari kepingan *piece table* ke dalam string panjang lalu di-split ke paragraf. Fitur `WriteRun` (tebal, miring) belum diparsing dari `PlcfBtePapx` dan `PlcfBteChpx` karena kerumitan strukturnya. Agen berikutnya yang ingin menyempurnakan pembacaan (atau masuk ke penulisan Fase 1.i) harus mengimplementasikan parser property MS-DOC yang lebih canggih (Sprm extraction).
 2. **Pengujian biner `.doc`**: Saya tidak membuat unit test untuk `MSDocParser` karena sulitnya mengukir file biner `CFB` berisi `.doc` buatan di dalam *test suite*. Harap ambil contoh file `.doc` nyata dan masukkan ke folder `Tests/Corpus/` untuk pengujian otomatis.
+
+---
+
+## 2026-06-27 — Fase 1.i Tulis `.doc` (Writer CFB + MS-DOC: Round-trip Internal Selesai)
+
+**Dikerjakan oleh:** Claude Code (Opus 4.8)
+
+### Ringkasan
+
+Mengimplementasikan penulisan format lama biner `.doc` (Word 97-2003): **serializer CFB** (`CFBWriter`) + **writer MS-DOC** (`MSDocWriter`) yang membangun FIB, piece table (`Clx`), teks UTF-16, serta CHPX/PAPX formatted-disk-page untuk bold/italic/underline + alignment. Hasil tulis **round-trip penuh** lewat engine baca kita sendiri (`CFBArchive` + `MSDocParser`) dan menghasilkan compound file yang dikenali sistem sebagai dokumen Word.
+
+### Perubahan Utama
+
+- **`CFBWriter.swift`** (baru, `Legacy/CFB/`): serializer [MS-CFB] (sektor 512B, major v3). Menulis header, DIFAT/FAT, direktori (Root + stream, sibling chain ber-urut sesuai key CFB), dan sektor stream. Untuk menghindari mini-FAT, tiap stream di-pad ke kelipatan sektor & minimal 4096B sehingga selalu jadi *standard stream* (padding = slack yang diabaikan FIB/piece-table). Plus helper little-endian `appendUInt16LE/appendUInt32LE/writeUInt16LE/writeUInt32LE` pada `Data`.
+
+- **`MSDocWriter.swift`** (baru, `Legacy/Word/`): writer [MS-DOC].
+  - Flatten `blocks` → paragraf (tabel diratakan; gambar/shape di-drop = degrade text-only).
+  - Teks disimpan **UTF-16 non-compressed** di stream `WordDocument`; tiap paragraf diakhiri CR (`0x000D`).
+  - **Piece table** `Clx` (clxt=2 + `Plcfpcd` satu piece) di stream `1Table`.
+  - **CHPX FKP**: segmentasi run per-format; sprm bold (`0x0835`), italic (`0x0836`), underline (`0x2A3E`). **PAPX FKP**: alignment via sprm `sprmPJc` (`0x2403`). `PlcfBteChpx`/`PlcfBtePapx` memetakan FC→halaman FKP.
+  - **FIB** Word 97 (`nFib=0x00C1`, `fWhichTblStm`→`1Table`, `csw/cslw/cbRgFcLcb` standar, indeks 25/26/66 = PlcfBteChpx/PlcfBtePapx/Clx) + `ccpText`.
+  - **Fallback aman**: bila format tak muat di satu page 512B, degrade ke teks-only (dokumen tetap valid).
+
+- **App** (`WriteDocument.swift`, `Info.plist`): `data(ofType:)` kini menulis `.doc` via `MSDocWriter`; `.doc` dinaikkan dari **Viewer → Editor** (read-write).
+
+- **Test** (`SenovativeKitTests.swift`, **16 total**): CFB writer↔reader round-trip; `.doc` round-trip teks + bold/italic + alignment (center/right) lewat `MSDocParser`; `.doc` paragraf tunggal polos.
+
+### Verifikasi Build & Test
+
+- `swift test` (SenovativeKit): **16 test lulus**.
+- `./Tools/build.sh` (release arm64): **`** BUILD SUCCEEDED **`**, `Mach-O arm64`, tanpa warning baru di kode app.
+- File `.doc` hasil writer dikenali `file(1)` sebagai **`CDFV2 Microsoft Word`** (compound document valid).
+
+### Catatan Teknis Untuk Agen Berikutnya (PENTING)
+
+- **Round-trip internal SELESAI & teruji**, tapi **ekstraksi teks oleh reader ketat belum dikonfirmasi**: `textutil` macOS (reader `.doc` Apple) belum mengekstrak teks dari output kita. Penyebab paling mungkin: **STSH (stylesheet) belum ditulis** (`fcStshf/lcbStshf=0`) — MS Word/Apple umumnya butuh STSH valid berisi style built-in (Normal dll.), dan kemungkinan bin-table CHP/PAP yang lebih lengkap. Ini langkah berikut untuk fidelity MS Word nyata.
+- **Belum diverifikasi di MS Word asli** (tak ada Word di lingkungan). Sesuai `planning.md` §11(d): **"Save As → .docx"** tetap jalan aman untuk dokumen yang harus pasti terbuka.
+- Writer text-only: tabel diratakan jadi paragraf; gambar/shape/hyperlink tidak ditulis ke `.doc`.
+- CHPX/PAPX dibatasi **satu page 512B** (≈≤20-30 paragraf/run berformat); lebih dari itu → degrade teks-only. Multi-page FKP belum ada.
+- Teks UTF-16 non-compressed (boros 2×); belum ada mode compressed CP1252.
+
+### Status Roadmap
+
+🟡 **Fase 1.i — Tulis `.doc`: writer + round-trip internal SELESAI; fidelity MS Word perlu STSH + verifikasi.**
+- Serializer CFB (`CFBWriter`): selesai.
+- Writer MS-DOC (FIB, piece table, teks, CHPX/PAPX format): selesai.
+- Round-trip lewat engine baca sendiri: selesai (teruji).
+- Container dikenali sebagai dokumen Word (`file`): ya.
+- Terbuka benar di MS Word/textutil: **belum terkonfirmasi** (perlu STSH + bin-table lengkap + uji manual Word).
+
+Berikutnya: tulis **STSH minimal** + lengkapi bin-table agar `.doc` terbaca reader ketat, lalu **Fase 1.j — Produktivitas & Export** (PDF, Find & Replace, spell check, word count, dst.).

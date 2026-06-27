@@ -10,6 +10,9 @@ xcuserdata/
 .build/
 .swiftpm/
 
+# IDEs
+.idea/
+
 # macOS packaging outputs
 *.dmg
 *.xcarchive

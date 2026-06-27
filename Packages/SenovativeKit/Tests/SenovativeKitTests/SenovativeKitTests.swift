@@ -364,3 +364,57 @@ private let onePixelPNG = Data([
     #expect(savedRels?.contains("charts/chart1.xml") == true)
     #expect(savedRels?.contains("https://example.com") == true)
 }
+
+@Test func cfbWriterRoundTripsStreams() throws {
+    let wordData = Data((0..<100).map { UInt8($0 % 256) })
+    let tableData = Data("piece-table-bytes".utf8)
+    let container = try CFBWriter.write(streams: [
+        CFBStream(name: "WordDocument", data: wordData),
+        CFBStream(name: "1Table", data: tableData),
+    ])
+
+    let archive = try CFBArchive(data: container)
+    let readWord = try archive.readStream(named: "WordDocument")
+    let readTable = try archive.readStream(named: "1Table")
+
+    // Streams are padded; the original content is preserved as a prefix.
+    #expect(readWord.prefix(wordData.count) == wordData)
+    #expect(readTable.prefix(tableData.count) == tableData)
+}
+
+@Test func docRoundTripPreservesTextFormattingAndAlignment() throws {
+    let model = WriteDocumentModel(title: "Legacy", paragraphs: [
+        WriteParagraph(runs: [
+            WriteRun(text: "Hello "),
+            WriteRun(text: "bold", bold: true),
+            WriteRun(text: " and "),
+            WriteRun(text: "italic", italic: true),
+        ]),
+        WriteParagraph(runs: [WriteRun(text: "Centered")], alignment: .center),
+        WriteParagraph(runs: [WriteRun(text: "Right side")], alignment: .right),
+    ])
+
+    let data = try MSDocWriter.writeDoc(model: model)
+    let parsed = try MSDocParser(archive: try CFBArchive(data: data)).parse()
+
+    #expect(parsed.paragraphs.count == 3)
+    #expect(parsed.paragraphs[0].plainText == "Hello bold and italic")
+    #expect(parsed.paragraphs[1].plainText == "Centered")
+    #expect(parsed.paragraphs[1].alignment == .center)
+    #expect(parsed.paragraphs[2].plainText == "Right side")
+    #expect(parsed.paragraphs[2].alignment == .right)
+
+    let firstRuns = parsed.paragraphs[0].runs
+    #expect(firstRuns.first { $0.bold }?.text == "bold")
+    #expect(firstRuns.first { $0.italic }?.text == "italic")
+}
+
+@Test func docRoundTripHandlesPlainSingleParagraph() throws {
+    let model = WriteDocumentModel(title: "Plain", paragraphs: [
+        WriteParagraph(runs: [WriteRun(text: "Just text")]),
+    ])
+    let data = try MSDocWriter.writeDoc(model: model)
+    let parsed = try MSDocParser(archive: try CFBArchive(data: data)).parse()
+
+    #expect(parsed.paragraphs.first?.plainText == "Just text")
+}

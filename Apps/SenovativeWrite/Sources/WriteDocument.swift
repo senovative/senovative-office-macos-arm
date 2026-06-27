@@ -39,10 +39,12 @@ final class WriteDocument: NSDocument {
     }
 
     override func data(ofType typeName: String) throws -> Data {
-        guard typeName == OfficeFileType.docx.contentTypeIdentifier else {
+        if typeName == OfficeFileType.docx.contentTypeIdentifier {
+            return try OOXMLEngine.writeWord(model: state.model)
+        } else if typeName == OfficeFileType.doc.contentTypeIdentifier {
+            return try MSDocWriter.writeDoc(model: state.model)
+        } else {
             throw SenovativeDocumentError.unsupportedFormat(typeName)
         }
-
-        return try OOXMLEngine.writeWord(model: state.model)
     }
 }
