@@ -523,3 +523,119 @@ Seluruh tes telah lulus (*100% passed*) dan aplikasi berhasil dibangun (*Build S
 1. **Visualisasi Header & Footer di UI**: Secara sistem (*backend IO*), data `header1.xml` dan `footer1.xml` sudah tersimpan di dalam model `WriteDocumentSection` dan bisa di-baca/tulis dengan aman. Namun, UI Canvas saat ini (*PageContainerView*) belum menggambar area *header/footer* tersebut ke layar secara *WYSIWYG* maupun merespons klik ganda untuk mode pengeditan *header*. Agen berikutnya perlu menambahkannya jika pengguna meminta.
 2. **Kinerja & Batas Pagination (*Exclusion Paths*)**: Logika visual pemecah halaman saat ini menghasilkan 500 buah *gap* secara statis (`exclusionPaths`). Ini sangat efisien untuk dokumen wajar, namun jika pengguna memuat file raksasa dengan jumlah halaman lebih dari 500 lembar, teks akan tumpah. Agen berikutnya dapat mengkalibrasi fungsi ini menjadi dinamis.
 3. **Penyelarasan Manual Page Break**: Karakter *Form Feed* (`\u{000C}`) menjembatani atribut *page break* XML ke dalam `NSAttributedString`. Meskipun bekerja sangat baik untuk penyimpanan OOXML, perilaku kursor kustom mungkin diperlukan pada AppKit untuk melompat mulus ke "halaman baru" jika ditekan *Shortcut* (misal Cmd+Enter).
+
+---
+
+## 2026-06-27 — Fase 1.f Objek Sisipan (Sebagian: Tabel, Hyperlink, Special Char)
+
+**Dikerjakan oleh:** Claude Code (Opus 4.8)
+
+### Ringkasan
+
+Mengerjakan Fase 1.f untuk objek sisipan. Tercakup penuh (model + OOXML round-trip + editor + test): **tabel** (`<w:tbl>`), **hyperlink** (`<w:hyperlink r:id>` + relationship eksternal), dan **special character tab** (`<w:tab/>`). **Gambar** (`word/media/`) dan **shape** ditunda ke lanjutan 1.f karena butuh penanganan part biner & `<w:drawing>`.
+
+### Perubahan Utama
+
+- **Model jadi berbasis blok** (`WriteDocumentModel.swift`):
+  - Body dokumen kini `blocks: [WriteBlock]` (`.paragraph` | `.table`) agar tabel & paragraf bisa berselang sesuai urutan `<w:body>`.
+  - Tipe baru: `WriteTable`, `WriteTableRow`, `WriteTableCell`, `WriteBlock`.
+  - `WriteRun.linkURL` untuk target hyperlink eksternal.
+  - Properti `paragraphs` & `init(title:paragraphs:)` dipertahankan untuk kompatibilitas (paragraphs = blok paragraf, tabel di-skip).
+
+- **Engine OOXML diperluas** (`WordprocessingML.swift`):
+  - Parser membaca `<w:tbl>/<w:tr>/<w:tc>` (satu level), `<w:hyperlink r:id>` (di-resolve via rels), dan `<w:tab/>` → `\t`. Mengembalikan `(blocks, section)`; helper `parseParagraphs` untuk header/footer.
+  - `RelationshipParser` baru: baca `word/_rels/document.xml.rels` → map id→target untuk resolve hyperlink.
+  - Writer menulis tabel (dengan `tblBorders`/`tblGrid`/`tcW`), membungkus run ber-link dalam `<w:hyperlink>`, serialisasi tab `<w:tab/>`, dan menambahkan relationship hyperlink `TargetMode="External"`.
+  - Root `<w:document>` kini mendeklarasikan `xmlns:r` (sebelumnya `r:id` header/footer dipakai tanpa deklarasi namespace).
+
+- **Engine bridge** (`OOXMLEngine.swift`):
+  - `readWord` parse rels lebih dulu lalu suplai resolver hyperlink ke parser; body kini `blocks`.
+  - `writeWord` hitung `hyperlinkRelations` dan thread ke `documentRels` + `document`.
+
+- **Editor TextKit 2** (`WriteViewController.swift`):
+  - Bridge model↔`NSAttributedString` kini block-aware. Tabel dirender via `NSTextTable`/`NSTextTableBlock` dan **direkonstruksi** kembali ke `WriteTable` saat `model(from:)` (via `WriteTableAccumulator`, dikelompokkan per posisi sel) sehingga tabel yang dibuka tidak hilang saat sesi edit.
+  - Hyperlink dipetakan ke atribut `.link` (klik membuka URL); tab natural.
+  - Konvensi newline diubah: tiap paragraf membawa newline terminator ber-style (termasuk keanggotaan tabel), trailing newline terakhir dibuang.
+  - Tombol ribbon baru: **Insert Link** (dialog URL `NSAlert`) & **Insert Table** (2×2) lewat action `RichTextView`.
+
+- **Test** (`SenovativeKitTests.swift`): tambah round-trip hyperlink, tab, dan tabel (paragraf↔tabel↔paragraf berurutan, format sel ikut terjaga).
+
+### Verifikasi Build & Test
+
+- `swift test` (SenovativeKit): **9 test lulus** (termasuk tabel, hyperlink, tab).
+- `./Tools/build.sh` (release arm64): **`** BUILD SUCCEEDED **`**, executable `Mach-O 64-bit arm64`, tanpa warning baru di kode app.
+
+### Catatan Teknis Untuk Agen Berikutnya
+
+- **Gambar & shape belum ada.** Ini sisa Fase 1.f. Gambar butuh: ekstraksi/penyimpanan part biner `word/media/*` di `OOXMLArchive`, parse `<w:drawing>`/`a:blip r:embed` + dimensi EMU, model `WriteImage` (inline dalam run), dan render via `NSTextAttachment` di editor.
+- **Tabel: satu level, tanpa merge cell.** Parser/writer belum menangani tabel bersarang, `gridSpan`/`vMerge`, atau lebar kolom per-sel dari dokumen asli (kolom dibagi rata saat tulis).
+- **Rekonstruksi tabel dari editor bergantung `NSTextTableBlock`.** Mengedit struktur tabel (tambah/hapus baris-kolom) di kanvas belum ada UI khusus; pengeditan teks dalam sel sudah aman.
+- **Round-trip preservation umum belum ada** (part tak dikenal seperti `styles.xml` masih di-drop) — tetap target Fase 1.g.
+- **Hyperlink hanya body.** Link di header/footer tidak menulis relationship (butuh `header1.xml.rels` terpisah).
+
+### Status Roadmap
+
+Fase 1.f sebagian selesai:
+- Tabel (`<w:tbl>`): selesai (round-trip + editor).
+- Hyperlink: selesai (round-trip + editor).
+- Special character (tab): selesai.
+- Gambar (`word/media/`): belum.
+- Shape dasar: belum.
+
+Berikutnya: lengkapi **gambar & shape** (sisa 1.f), lalu **Fase 1.g — Fidelity & Robustness OOXML** (uji `.docx` dunia nyata + round-trip preservation part tak dikenal).
+
+---
+
+## 2026-06-27 — Fase 1.f Objek Sisipan (Selesai: + Gambar & Shape)
+
+**Dikerjakan oleh:** Claude Code (Opus 4.8)
+
+### Ringkasan
+
+Melengkapi Fase 1.f dengan **gambar inline** (`word/media/` + `<w:drawing>`/`a:blip`) dan **shape dasar** (rectangle/oval via `wps:wsp` + `prstGeom`). Dengan ini seluruh item objek sisipan 1.f (tabel, gambar, shape, hyperlink, special char) tercakup di level model + OOXML round-trip + editor, semuanya ber-test.
+
+### Perubahan Utama
+
+- **Model** (`WriteDocumentModel.swift`):
+  - `WriteImage` (data biner, ekstensi, lebar/tinggi dalam points) dan `WriteShape` (`WriteShapeKind` rectangle/oval, ukuran, `fillColorHex`).
+  - `WriteRun.image` & `WriteRun.shape` (run pembawa objek; teks kosong).
+
+- **Engine OOXML** (`WordprocessingML.swift`):
+  - Parser membaca `<w:drawing>`: `<wp:extent>` (EMU→points), `<a:blip r:embed>` (gambar, di-resolve ke bytes via `imageResolver`), dan `<a:prstGeom>` + `<a:srgbClr>` (shape + fill). Konversi EMU baru (`914400 EMU = 1 inci`).
+  - Writer: `imageDrawing`/`shapeDrawing`; `DrawingContext` mengumpulkan picture + memberi `docPr` id unik. `document()` kini mengembalikan `(xml, [ImageRelation])`.
+  - `contentTypes` menambah `<Default>` per ekstensi gambar; `documentRels` menambah relationship tipe `image`. Root `<w:document>` mendeklarasikan namespace `wp`/`a`/`pic`/`wps`.
+
+- **Engine bridge** (`OOXMLEngine.swift`):
+  - `imageResolver`: relId→target (dari rels)→baca part `word/media/...` jadi bytes+ext.
+  - `writeWord` menserialisasi body dulu (untuk tahu gambar yang dipakai), lalu menulis part media biner + relationship + content-types.
+
+- **Editor** (`WriteViewController.swift`):
+  - `WriteImageAttachment` & `WriteShapeAttachment` (subclass `NSTextAttachment`) — gambar memakai bytes asli (tak re-encode), shape digambar ke `NSImage`. Keduanya menyimpan model untuk rekonstruksi presisi saat save.
+  - Bridge merender run gambar/shape sebagai attachment dan merekonstruksinya kembali di `model(from:)`.
+  - Tombol ribbon **Insert Image** (`NSOpenPanel`, auto-resize maks lebar 400pt) & **Insert Shape** (rectangle default).
+
+- **Test** (`SenovativeKitTests.swift`): round-trip gambar inline (bytes PNG identik + dimensi) dan shape (kind + ukuran + fill).
+
+### Verifikasi Build & Test
+
+- `swift test` (SenovativeKit): **11 test lulus** (tambah gambar & shape).
+- `./Tools/build.sh` (release arm64): **`** BUILD SUCCEEDED **`**, `Mach-O 64-bit arm64`, tanpa warning baru di kode app.
+
+### Catatan Teknis Untuk Agen Berikutnya
+
+- **Shape = geometri dasar saja** (rectangle/oval + fill solid). Tanpa teks dalam shape (`wps:txbx`), garis/efek, rotasi, atau floating/anchored positioning (semua inline). Fidelity shape di Word bersifat pendekatan.
+- **Gambar inline saja** (`wp:inline`), belum floating/wrap (`wp:anchor`). EMU di-bulatkan sehingga ukuran bisa meleset ~1px.
+- **Tabel** tetap satu level tanpa merge cell (dari entri sebelumnya).
+- **Round-trip preservation** part tak dikenal masih belum → target **Fase 1.g**.
+- **Header/footer** belum mendukung relationship gambar/hyperlink (butuh `*.rels` part terpisah).
+
+### Status Roadmap
+
+✅ **Fase 1.f — Objek Sisipan: SELESAI**
+- Tabel (`<w:tbl>`): selesai.
+- Gambar (`word/media/` + `<w:drawing>`): selesai.
+- Shape dasar (rectangle/oval): selesai.
+- Hyperlink: selesai.
+- Special character (tab): selesai.
+
+Berikutnya: **Fase 1.g — Fidelity & Robustness OOXML** (uji `.docx` dunia nyata dari Word/Google Docs, **round-trip preservation** part tak dikenal supaya tak ada data loss, penanganan error, fonts).

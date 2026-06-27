@@ -15,6 +15,12 @@ public struct WriteRun: Equatable, Sendable {
     public var highlightColorHex: String?
     public var verticalAlignment: WriteVerticalAlignment
     public var isPageBreak: Bool
+    /// External hyperlink target. When set, the run is wrapped in `<w:hyperlink>`.
+    public var linkURL: String?
+    /// Inline picture carried by this run (`<w:drawing>` + `a:blip`).
+    public var image: WriteImage?
+    /// Inline basic shape carried by this run (`<w:drawing>` + `wps:wsp`).
+    public var shape: WriteShape?
 
     public init(
         text: String,
@@ -26,7 +32,10 @@ public struct WriteRun: Equatable, Sendable {
         textColorHex: String? = nil,
         highlightColorHex: String? = nil,
         verticalAlignment: WriteVerticalAlignment = .baseline,
-        isPageBreak: Bool = false
+        isPageBreak: Bool = false,
+        linkURL: String? = nil,
+        image: WriteImage? = nil,
+        shape: WriteShape? = nil
     ) {
         self.text = text
         self.bold = bold
@@ -38,6 +47,44 @@ public struct WriteRun: Equatable, Sendable {
         self.highlightColorHex = highlightColorHex
         self.verticalAlignment = verticalAlignment
         self.isPageBreak = isPageBreak
+        self.linkURL = linkURL
+        self.image = image
+        self.shape = shape
+    }
+}
+
+/// An inline picture: the raw bytes, a file extension, and its display size in points.
+public struct WriteImage: Equatable, Sendable {
+    public var data: Data
+    public var fileExtension: String
+    public var width: Double
+    public var height: Double
+
+    public init(data: Data, fileExtension: String, width: Double, height: Double) {
+        self.data = data
+        self.fileExtension = fileExtension.lowercased()
+        self.width = width
+        self.height = height
+    }
+}
+
+public enum WriteShapeKind: String, Equatable, Sendable {
+    case rectangle
+    case oval
+}
+
+/// A basic inline shape: a rectangle or oval with a size and optional fill color.
+public struct WriteShape: Equatable, Sendable {
+    public var kind: WriteShapeKind
+    public var width: Double
+    public var height: Double
+    public var fillColorHex: String?
+
+    public init(kind: WriteShapeKind, width: Double, height: Double, fillColorHex: String? = nil) {
+        self.kind = kind
+        self.width = width
+        self.height = height
+        self.fillColorHex = fillColorHex
     }
 }
 
@@ -109,6 +156,49 @@ public enum WriteListKind: String, Equatable, Sendable {
     case numbered
 }
 
+/// A table cell holds a list of paragraphs. Maps to `<w:tc>`.
+public struct WriteTableCell: Equatable, Sendable {
+    public var paragraphs: [WriteParagraph]
+
+    public init(paragraphs: [WriteParagraph] = [WriteParagraph()]) {
+        self.paragraphs = paragraphs.isEmpty ? [WriteParagraph()] : paragraphs
+    }
+
+    public var plainText: String {
+        paragraphs.map(\.plainText).joined(separator: "\n")
+    }
+}
+
+/// A table row holds an ordered list of cells. Maps to `<w:tr>`.
+public struct WriteTableRow: Equatable, Sendable {
+    public var cells: [WriteTableCell]
+
+    public init(cells: [WriteTableCell]) {
+        self.cells = cells
+    }
+}
+
+/// A table is a grid of rows. Maps to `<w:tbl>`.
+public struct WriteTable: Equatable, Sendable {
+    public var rows: [WriteTableRow]
+
+    public init(rows: [WriteTableRow]) {
+        self.rows = rows
+    }
+
+    /// Maximum cell count across rows — used as the column count.
+    public var columnCount: Int {
+        rows.map(\.cells.count).max() ?? 0
+    }
+}
+
+/// A block-level element in the document body: either a paragraph or a table.
+/// Maps to the children of `<w:body>` (`<w:p>` and `<w:tbl>`).
+public enum WriteBlock: Equatable, Sendable {
+    case paragraph(WriteParagraph)
+    case table(WriteTable)
+}
+
 public struct WriteEdgeInsets: Equatable, Sendable {
     public var top: Double
     public var left: Double
@@ -155,13 +245,19 @@ public struct WriteDocumentSection: Equatable, Sendable {
 
 public struct WriteDocumentModel: OfficeDocumentModel {
     public var title: String
-    public var paragraphs: [WriteParagraph]
+    /// The document body in order: paragraphs and tables interleaved.
+    public var blocks: [WriteBlock]
     public var section: WriteDocumentSection
 
-    public init(title: String, paragraphs: [WriteParagraph], section: WriteDocumentSection = WriteDocumentSection()) {
+    public init(title: String, blocks: [WriteBlock], section: WriteDocumentSection = WriteDocumentSection()) {
         self.title = title
-        self.paragraphs = paragraphs
+        self.blocks = blocks
         self.section = section
+    }
+
+    /// Convenience for paragraph-only content (no tables).
+    public init(title: String, paragraphs: [WriteParagraph], section: WriteDocumentSection = WriteDocumentSection()) {
+        self.init(title: title, blocks: paragraphs.map(WriteBlock.paragraph), section: section)
     }
 
     /// Convenience for plain-text content: splits on newlines into single
@@ -175,7 +271,16 @@ public struct WriteDocumentModel: OfficeDocumentModel {
         self.init(title: title, paragraphs: paragraphs)
     }
 
-    /// Whole-document plain text, paragraphs joined by newlines.
+    /// Top-level paragraphs in order, skipping tables. Kept for callers that
+    /// only deal with paragraph content (e.g. plain-text helpers).
+    public var paragraphs: [WriteParagraph] {
+        blocks.compactMap { block in
+            if case let .paragraph(paragraph) = block { return paragraph }
+            return nil
+        }
+    }
+
+    /// Whole-document plain text, top-level paragraphs joined by newlines.
     public var plainText: String {
         paragraphs.map(\.plainText).joined(separator: "\n")
     }

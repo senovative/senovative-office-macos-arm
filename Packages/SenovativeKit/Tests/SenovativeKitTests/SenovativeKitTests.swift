@@ -61,8 +61,7 @@ import Testing
       </w:body>
     </w:document>
     """
-    let result = try WordprocessingMLParser().parse(data: Data(xml.utf8))
-    let paragraphs = result.paragraphs
+    let paragraphs = try WordprocessingMLParser().parseParagraphs(data: Data(xml.utf8))
 
     #expect(paragraphs.count == 1)
     #expect(paragraphs[0].runs.count == 1)
@@ -143,4 +142,117 @@ import Testing
     #expect(parsed.paragraphs[1].list == WriteListStyle(kind: .bullet))
     #expect(parsed.paragraphs[2].alignment == .right)
     #expect(parsed.paragraphs[2].list == WriteListStyle(kind: .numbered))
+}
+
+@Test func wordRoundTripPreservesHyperlinks() throws {
+    let model = WriteDocumentModel(title: "Links", paragraphs: [
+        WriteParagraph(runs: [
+            WriteRun(text: "Visit "),
+            WriteRun(text: "Senovative", bold: true, linkURL: "https://senovative.io"),
+            WriteRun(text: " now"),
+        ]),
+    ])
+
+    let data = try OOXMLEngine.writeWord(model: model)
+    let parsed = try OOXMLEngine.readWord(from: data)
+    let runs = parsed.paragraphs[0].runs
+
+    #expect(runs.count == 3)
+    #expect(runs[1].text == "Senovative")
+    #expect(runs[1].bold)
+    #expect(runs[1].linkURL == "https://senovative.io")
+    #expect(runs[0].linkURL == nil)
+    #expect(runs[2].linkURL == nil)
+}
+
+@Test func wordRoundTripPreservesTabs() throws {
+    let model = WriteDocumentModel(title: "Tabs", paragraphs: [
+        WriteParagraph(runs: [WriteRun(text: "Name\tValue")]),
+    ])
+
+    let data = try OOXMLEngine.writeWord(model: model)
+    let parsed = try OOXMLEngine.readWord(from: data)
+
+    #expect(parsed.paragraphs[0].runs[0].text == "Name\tValue")
+}
+
+@Test func wordRoundTripPreservesTables() throws {
+    let table = WriteTable(rows: [
+        WriteTableRow(cells: [
+            WriteTableCell(paragraphs: [WriteParagraph(runs: [WriteRun(text: "A1")])]),
+            WriteTableCell(paragraphs: [WriteParagraph(runs: [WriteRun(text: "B1", bold: true)])]),
+        ]),
+        WriteTableRow(cells: [
+            WriteTableCell(paragraphs: [WriteParagraph(runs: [WriteRun(text: "A2")])]),
+            WriteTableCell(paragraphs: [WriteParagraph(runs: [WriteRun(text: "B2")])]),
+        ]),
+    ])
+    let model = WriteDocumentModel(title: "Grid", blocks: [
+        .paragraph(WriteParagraph(runs: [WriteRun(text: "Before")])),
+        .table(table),
+        .paragraph(WriteParagraph(runs: [WriteRun(text: "After")])),
+    ])
+
+    let data = try OOXMLEngine.writeWord(model: model)
+    let parsed = try OOXMLEngine.readWord(from: data)
+
+    #expect(parsed.blocks.count == 3)
+    guard case let .paragraph(before) = parsed.blocks[0] else { Issue.record("expected paragraph"); return }
+    #expect(before.plainText == "Before")
+
+    guard case let .table(parsedTable) = parsed.blocks[1] else { Issue.record("expected table"); return }
+    #expect(parsedTable.rows.count == 2)
+    #expect(parsedTable.columnCount == 2)
+    #expect(parsedTable.rows[0].cells[0].plainText == "A1")
+    #expect(parsedTable.rows[0].cells[1].plainText == "B1")
+    #expect(parsedTable.rows[0].cells[1].paragraphs[0].runs[0].bold)
+    #expect(parsedTable.rows[1].cells[1].plainText == "B2")
+
+    guard case let .paragraph(after) = parsed.blocks[2] else { Issue.record("expected paragraph"); return }
+    #expect(after.plainText == "After")
+}
+
+// A minimal valid 1x1 PNG.
+private let onePixelPNG = Data([
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+    0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+])
+
+@Test func wordRoundTripPreservesInlineImage() throws {
+    let image = WriteImage(data: onePixelPNG, fileExtension: "png", width: 120, height: 90)
+    let model = WriteDocumentModel(title: "Picture", paragraphs: [
+        WriteParagraph(runs: [WriteRun(text: "Logo: "), WriteRun(text: "", image: image)]),
+    ])
+
+    let data = try OOXMLEngine.writeWord(model: model)
+    let parsed = try OOXMLEngine.readWord(from: data)
+    let runs = parsed.paragraphs[0].runs
+
+    let pictureRun = try #require(runs.first { $0.image != nil })
+    let parsedImage = try #require(pictureRun.image)
+    #expect(parsedImage.data == onePixelPNG)
+    #expect(parsedImage.fileExtension == "png")
+    #expect(Int(parsedImage.width.rounded()) == 120)
+    #expect(Int(parsedImage.height.rounded()) == 90)
+}
+
+@Test func wordRoundTripPreservesShape() throws {
+    let shape = WriteShape(kind: .oval, width: 80, height: 60, fillColorHex: "FF8800")
+    let model = WriteDocumentModel(title: "Shape", paragraphs: [
+        WriteParagraph(runs: [WriteRun(text: "", shape: shape)]),
+    ])
+
+    let data = try OOXMLEngine.writeWord(model: model)
+    let parsed = try OOXMLEngine.readWord(from: data)
+
+    let shapeRun = try #require(parsed.paragraphs[0].runs.first { $0.shape != nil })
+    let parsedShape = try #require(shapeRun.shape)
+    #expect(parsedShape.kind == .oval)
+    #expect(Int(parsedShape.width.rounded()) == 80)
+    #expect(Int(parsedShape.height.rounded()) == 60)
+    #expect(parsedShape.fillColorHex == "FF8800")
 }

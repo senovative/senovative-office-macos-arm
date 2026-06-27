@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import SenovativeKit
 import SenovativeUI
 
@@ -67,6 +68,18 @@ private struct WriteDocumentView: View {
                 }
                 RibbonIconButton("Subscript", systemImage: "textformat.subscript") {
                     NSApplication.shared.sendAction(#selector(RichTextView.toggleSubscript(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Insert Link", systemImage: "link") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.insertHyperlink(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Insert Table", systemImage: "tablecells") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.insertTableObject(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Insert Image", systemImage: "photo") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.insertImageObject(_:)), to: nil, from: nil)
+                }
+                RibbonIconButton("Insert Shape", systemImage: "square.on.circle") {
+                    NSApplication.shared.sendAction(#selector(RichTextView.insertShapeObject(_:)), to: nil, from: nil)
                 }
             }
 
@@ -221,61 +234,149 @@ private enum WriteAttributedStringBridge {
 
     static func attributedString(from model: WriteDocumentModel) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        for (index, paragraph) in model.paragraphs.enumerated() {
-            if index > 0 {
-                result.append(NSAttributedString(string: "\n", attributes: paragraphAttributes(for: paragraph)))
+        for block in model.blocks {
+            switch block {
+            case let .paragraph(paragraph):
+                appendParagraph(paragraph, tableBlock: nil, into: result)
+            case let .table(table):
+                appendTable(table, into: result)
             }
-            for run in paragraph.runs {
-                var text = run.text
-                if run.isPageBreak { text = "\u{000C}" + text }
-                if text.isEmpty { continue }
-                result.append(NSAttributedString(string: text, attributes: attributes(for: run, paragraph: paragraph)))
-            }
+        }
+        // Drop the trailing newline contributed by the final paragraph so the
+        // text view does not show a spurious empty line.
+        if result.length > 0 {
+            result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
         }
         return result
     }
 
-    static func model(from attributed: NSAttributedString, title: String) -> WriteDocumentModel {
-        var paragraphs: [WriteParagraph] = []
+    /// Builds a standalone table fragment (used by "Insert Table").
+    static func tableAttributedString(_ table: WriteTable) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        appendTable(table, into: result)
+        return result
+    }
 
+    private static func appendParagraph(_ paragraph: WriteParagraph, tableBlock: NSTextTableBlock?, into result: NSMutableAttributedString) {
+        let style = paragraphStyle(for: paragraph, tableBlock: tableBlock)
+        for run in paragraph.runs {
+            if let attachment = attachment(for: run) {
+                let attr = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+                attr.addAttributes([.paragraphStyle: style], range: NSRange(location: 0, length: attr.length))
+                result.append(attr)
+                continue
+            }
+            var text = run.text
+            if run.isPageBreak { text = "\u{000C}" + text }
+            if text.isEmpty { continue }
+            var attrs = attributes(for: run)
+            attrs[.paragraphStyle] = style
+            result.append(NSAttributedString(string: text, attributes: attrs))
+        }
+        // The trailing newline terminates the paragraph and carries its style
+        // (including table membership), so TextKit keeps cells grouped.
+        var newlineAttrs = defaultTypingAttributes
+        newlineAttrs[.paragraphStyle] = style
+        result.append(NSAttributedString(string: "\n", attributes: newlineAttrs))
+    }
+
+    private static func appendTable(_ table: WriteTable, into result: NSMutableAttributedString) {
+        let columns = max(1, table.columnCount)
+        let nsTable = NSTextTable()
+        nsTable.numberOfColumns = columns
+        for (rowIndex, row) in table.rows.enumerated() {
+            for (columnIndex, cell) in row.cells.enumerated() {
+                let block = NSTextTableBlock(
+                    table: nsTable,
+                    startingRow: rowIndex,
+                    rowSpan: 1,
+                    startingColumn: columnIndex,
+                    columnSpan: 1
+                )
+                block.setBorderColor(.separatorColor)
+                block.setWidth(1, type: .absoluteValueType, for: .border)
+                block.setWidth(4, type: .absoluteValueType, for: .padding)
+                for paragraph in cell.paragraphs {
+                    appendParagraph(paragraph, tableBlock: block, into: result)
+                }
+            }
+        }
+    }
+
+    static func model(from attributed: NSAttributedString, title: String) -> WriteDocumentModel {
         if attributed.length == 0 {
             return WriteDocumentModel(title: title, paragraphs: [WriteParagraph()])
         }
 
+        // 1. Split into paragraph entries, capturing table membership.
         let string = attributed.string as NSString
-        var paragraphStart = 0
-        while paragraphStart <= attributed.length {
-            let searchRange = NSRange(location: paragraphStart, length: attributed.length - paragraphStart)
+        var entries: [(paragraph: WriteParagraph, block: NSTextTableBlock?)] = []
+        var start = 0
+        while start <= attributed.length {
+            let searchRange = NSRange(location: start, length: attributed.length - start)
             let newline = string.range(of: "\n", options: [], range: searchRange)
-            let paragraphEnd = newline.location == NSNotFound ? attributed.length : newline.location
-            let paragraphRange = NSRange(location: paragraphStart, length: paragraphEnd - paragraphStart)
-            paragraphs.append(paragraph(from: attributed, range: paragraphRange))
+            let end = newline.location == NSNotFound ? attributed.length : newline.location
+            let range = NSRange(location: start, length: end - start)
+            let style = paragraphStyle(from: attributed, range: range, fallbackLocation: end)
+            entries.append((paragraph(from: attributed, range: range, style: style), tableBlock(in: style)))
 
-            if newline.location == NSNotFound {
-                break
-            }
-            paragraphStart = newline.location + 1
-            if paragraphStart == attributed.length {
-                paragraphs.append(WriteParagraph())
+            if newline.location == NSNotFound { break }
+            start = newline.location + 1
+            if start == attributed.length {
+                entries.append((WriteParagraph(), nil))
                 break
             }
         }
 
-        return WriteDocumentModel(title: title, paragraphs: paragraphs)
+        // 2. Group consecutive table-cell paragraphs back into tables.
+        var blocks: [WriteBlock] = []
+        var accumulator: WriteTableAccumulator?
+        func flush() {
+            if let accumulator { blocks.append(.table(accumulator.build())) }
+            accumulator = nil
+        }
+        for entry in entries {
+            if let block = entry.block {
+                if accumulator == nil || accumulator?.table !== block.table {
+                    flush()
+                    accumulator = WriteTableAccumulator(table: block.table)
+                }
+                accumulator?.add(entry.paragraph, block: block)
+            } else {
+                flush()
+                blocks.append(.paragraph(entry.paragraph))
+            }
+        }
+        flush()
+
+        if blocks.isEmpty { blocks = [.paragraph(WriteParagraph())] }
+        return WriteDocumentModel(title: title, blocks: blocks)
     }
 
-    private static func paragraph(from attributed: NSAttributedString, range: NSRange) -> WriteParagraph {
-        let paragraphStyle = paragraphStyle(from: attributed, range: range)
+    private static func tableBlock(in style: NSParagraphStyle) -> NSTextTableBlock? {
+        style.textBlocks.compactMap { $0 as? NSTextTableBlock }.first
+    }
+
+    private static func paragraph(from attributed: NSAttributedString, range: NSRange, style paragraphStyle: NSParagraphStyle) -> WriteParagraph {
         var runs: [WriteRun] = []
         if range.length > 0 {
             attributed.enumerateAttributes(in: range, options: []) { attrs, runRange, _ in
+                if let attachment = attrs[.attachment] as? NSTextAttachment {
+                    if let imageAttachment = attachment as? WriteImageAttachment {
+                        runs.append(WriteRun(text: "", image: imageAttachment.writeImage))
+                    } else if let shapeAttachment = attachment as? WriteShapeAttachment {
+                        runs.append(WriteRun(text: "", shape: shapeAttachment.writeShape))
+                    }
+                    return
+                }
+
                 let substring = (attributed.string as NSString).substring(with: runRange)
                 guard !substring.isEmpty else { return }
-                
+
                 let isPageBreak = substring.contains("\u{000C}")
                 let cleanedText = substring.replacingOccurrences(of: "\u{000C}", with: "")
                 if cleanedText.isEmpty && !isPageBreak { return }
-                
+
                 runs.append(
                     WriteRun(
                         text: cleanedText,
@@ -287,7 +388,8 @@ private enum WriteAttributedStringBridge {
                         textColorHex: colorHex(attrs[.foregroundColor] as? NSColor),
                         highlightColorHex: colorHex(attrs[.backgroundColor] as? NSColor),
                         verticalAlignment: verticalAlignment(attrs),
-                        isPageBreak: isPageBreak
+                        isPageBreak: isPageBreak,
+                        linkURL: linkURL(attrs)
                     )
                 )
             }
@@ -305,14 +407,16 @@ private enum WriteAttributedStringBridge {
         )
     }
 
-    private static func paragraphStyle(from attributed: NSAttributedString, range: NSRange) -> NSParagraphStyle {
+    private static func paragraphStyle(from attributed: NSAttributedString, range: NSRange, fallbackLocation: Int) -> NSParagraphStyle {
         guard attributed.length > 0 else { return NSParagraphStyle.default }
-        let location = min(range.location, attributed.length - 1)
+        // For empty paragraphs read the terminating newline's style; otherwise
+        // read the paragraph's first character.
+        let location = range.length > 0 ? range.location : min(fallbackLocation, attributed.length - 1)
         return attributed.attribute(.paragraphStyle, at: location, effectiveRange: nil) as? NSParagraphStyle
             ?? NSParagraphStyle.default
     }
 
-    private static func attributes(for run: WriteRun, paragraph: WriteParagraph) -> [NSAttributedString.Key: Any] {
+    private static func attributes(for run: WriteRun) -> [NSAttributedString.Key: Any] {
         let manager = NSFontManager.shared
         let baseFont = NSFont(name: run.fontFamily ?? defaultFont.fontName, size: CGFloat(run.fontSize ?? defaultFontSize)) ?? defaultFont
         var font = baseFont
@@ -322,7 +426,6 @@ private enum WriteAttributedStringBridge {
         var attrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: nsColor(hex: run.textColorHex) ?? NSColor.labelColor,
-            .paragraphStyle: paragraphStyle(for: paragraph),
         ]
         if run.underline {
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
@@ -338,16 +441,15 @@ private enum WriteAttributedStringBridge {
         case .subscripted:
             attrs[.superscript] = -1
         }
+        if let link = run.linkURL {
+            attrs[.link] = URL(string: link) ?? link
+            attrs[.foregroundColor] = NSColor.linkColor
+            attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
         return attrs
     }
 
-    private static func paragraphAttributes(for paragraph: WriteParagraph) -> [NSAttributedString.Key: Any] {
-        var attrs = defaultTypingAttributes
-        attrs[.paragraphStyle] = paragraphStyle(for: paragraph)
-        return attrs
-    }
-
-    private static func paragraphStyle(for paragraph: WriteParagraph) -> NSParagraphStyle {
+    private static func paragraphStyle(for paragraph: WriteParagraph, tableBlock: NSTextTableBlock? = nil) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.alignment = nsAlignment(paragraph.alignment)
         if let lineSpacing = paragraph.lineSpacing { style.lineSpacing = lineSpacing }
@@ -360,7 +462,20 @@ private enum WriteAttributedStringBridge {
             if style.headIndent == 0 { style.headIndent = 36 }
             if style.firstLineHeadIndent == 0 { style.firstLineHeadIndent = -18 }
         }
+        if let tableBlock { style.textBlocks = [tableBlock] }
         return style
+    }
+
+    private static func linkURL(_ attrs: [NSAttributedString.Key: Any]) -> String? {
+        if let url = attrs[.link] as? URL { return url.absoluteString }
+        if let string = attrs[.link] as? String, !string.isEmpty { return string }
+        return nil
+    }
+
+    private static func attachment(for run: WriteRun) -> NSTextAttachment? {
+        if let image = run.image { return WriteImageAttachment(writeImage: image) }
+        if let shape = run.shape { return WriteShapeAttachment(writeShape: shape) }
+        return nil
     }
 
     private static func isBold(_ attrs: [NSAttributedString.Key: Any]) -> Bool {
@@ -450,7 +565,177 @@ private enum WriteAttributedStringBridge {
     }
 }
 
+/// Regroups consecutive table-cell paragraphs (keyed by their `NSTextTableBlock`
+/// position) back into a `WriteTable` during model reconstruction.
+private final class WriteTableAccumulator {
+    let table: NSTextTable
+    private var grid: [String: [WriteParagraph]] = [:]
+    private var maxRow = -1
+    private var maxColumn = -1
+
+    init(table: NSTextTable) {
+        self.table = table
+    }
+
+    func add(_ paragraph: WriteParagraph, block: NSTextTableBlock) {
+        let key = "\(block.startingRow)-\(block.startingColumn)"
+        grid[key, default: []].append(paragraph)
+        maxRow = max(maxRow, block.startingRow)
+        maxColumn = max(maxColumn, block.startingColumn)
+    }
+
+    func build() -> WriteTable {
+        guard maxRow >= 0, maxColumn >= 0 else { return WriteTable(rows: []) }
+        var rows: [WriteTableRow] = []
+        for row in 0...maxRow {
+            var cells: [WriteTableCell] = []
+            for column in 0...maxColumn {
+                let paragraphs = grid["\(row)-\(column)"] ?? [WriteParagraph()]
+                cells.append(WriteTableCell(paragraphs: paragraphs))
+            }
+            rows.append(WriteTableRow(cells: cells))
+        }
+        return WriteTable(rows: rows)
+    }
+}
+
+/// An `NSTextAttachment` that carries the original `WriteImage` so the exact
+/// bytes survive an editing session (rather than being re-encoded).
+private final class WriteImageAttachment: NSTextAttachment {
+    let writeImage: WriteImage
+
+    init(writeImage: WriteImage) {
+        self.writeImage = writeImage
+        super.init(data: nil, ofType: nil)
+        image = NSImage(data: writeImage.data)
+        bounds = CGRect(x: 0, y: 0, width: writeImage.width, height: writeImage.height)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
+/// An `NSTextAttachment` that draws a basic shape and carries its `WriteShape`.
+private final class WriteShapeAttachment: NSTextAttachment {
+    let writeShape: WriteShape
+
+    init(writeShape: WriteShape) {
+        self.writeShape = writeShape
+        super.init(data: nil, ofType: nil)
+        image = WriteShapeAttachment.render(writeShape)
+        bounds = CGRect(x: 0, y: 0, width: writeShape.width, height: writeShape.height)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private static func render(_ shape: WriteShape) -> NSImage {
+        let size = NSSize(width: max(1, shape.width), height: max(1, shape.height))
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let rect = NSRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5)
+        let path = shape.kind == .oval ? NSBezierPath(ovalIn: rect) : NSBezierPath(rect: rect)
+        let fill = color(hex: shape.fillColorHex) ?? NSColor.systemBlue.withAlphaComponent(0.3)
+        fill.setFill()
+        path.fill()
+        NSColor.separatorColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        image.unlockFocus()
+        return image
+    }
+
+    private static func color(hex: String?) -> NSColor? {
+        guard let hex, hex.count == 6, let value = Int(hex, radix: 16) else { return nil }
+        return NSColor(
+            srgbRed: CGFloat((value >> 16) & 0xFF) / 255.0,
+            green: CGFloat((value >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(value & 0xFF) / 255.0,
+            alpha: 1
+        )
+    }
+}
+
 private final class RichTextView: NSTextView {
+    @objc func insertImageObject(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .bmp, .tiff]
+        guard panel.runModal() == .OK, let url = panel.url,
+              let data = try? Data(contentsOf: url), let nsImage = NSImage(data: data) else { return }
+
+        let maxWidth: CGFloat = 400
+        var size = nsImage.size
+        if size.width <= 0 || size.height <= 0 { size = NSSize(width: 200, height: 150) }
+        if size.width > maxWidth {
+            size = NSSize(width: maxWidth, height: size.height * (maxWidth / size.width))
+        }
+        let ext = url.pathExtension.isEmpty ? "png" : url.pathExtension
+        let image = WriteImage(data: data, fileExtension: ext, width: Double(size.width), height: Double(size.height))
+        insertAttachment(WriteImageAttachment(writeImage: image))
+    }
+
+    @objc func insertShapeObject(_ sender: Any?) {
+        let shape = WriteShape(kind: .rectangle, width: 120, height: 80, fillColorHex: "4A90D9")
+        insertAttachment(WriteShapeAttachment(writeShape: shape))
+    }
+
+    private func insertAttachment(_ attachment: NSTextAttachment) {
+        guard let storage = textStorage else { return }
+        let fragment = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+        fragment.addAttributes([.font: NSFont.systemFont(ofSize: 15)], range: NSRange(location: 0, length: fragment.length))
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: fragment.string) else { return }
+        storage.replaceCharacters(in: range, with: fragment)
+        didChangeText()
+    }
+
+    @objc func insertHyperlink(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Insert Link")
+        alert.informativeText = String(localized: "Enter the destination URL")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = "https://"
+        alert.accessoryView = field
+        alert.addButton(withTitle: String(localized: "Insert"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let urlString = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !urlString.isEmpty, let storage = textStorage else { return }
+
+        let range = selectedRange()
+        if range.length > 0 {
+            guard shouldChangeText(in: range, replacementString: nil) else { return }
+            storage.addAttribute(.link, value: URL(string: urlString) ?? urlString, range: range)
+            storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+            storage.addAttribute(.foregroundColor, value: NSColor.linkColor, range: range)
+            didChangeText()
+        } else {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .link: URL(string: urlString) ?? urlString,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .foregroundColor: NSColor.linkColor,
+                .font: NSFont.systemFont(ofSize: 15),
+            ]
+            let link = NSAttributedString(string: urlString, attributes: attrs)
+            guard shouldChangeText(in: range, replacementString: link.string) else { return }
+            storage.replaceCharacters(in: range, with: link)
+            didChangeText()
+        }
+    }
+
+    @objc func insertTableObject(_ sender: Any?) {
+        let cells = (0..<2).map { _ in WriteTableCell() }
+        let rows = (0..<2).map { _ in WriteTableRow(cells: cells) }
+        let table = WriteTable(rows: rows)
+        let fragment = WriteAttributedStringBridge.tableAttributedString(table)
+        guard let storage = textStorage else { return }
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: fragment.string) else { return }
+        storage.replaceCharacters(in: range, with: fragment)
+        didChangeText()
+    }
+
     @objc func toggleHighlight(_ sender: Any?) {
         let range = selectedRange()
         let targetRange = range.length > 0 ? range : NSRange(location: range.location, length: 0)

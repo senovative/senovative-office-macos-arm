@@ -1,15 +1,33 @@
 import Foundation
 
-/// Parses the body of `word/document.xml` into paragraphs and formatted runs.
+/// Parses the body of `word/document.xml` into block-level content
+/// (paragraphs and tables) plus formatted runs.
 ///
-/// Scope (Fase 1.c): paragraphs (`<w:p>`), runs (`<w:r>`), text (`<w:t>`) and the
-/// three character toggles inside a run's `<w:rPr>` — bold (`<w:b>`), italic
-/// (`<w:i>`) and underline (`<w:u>`). Run properties on the paragraph mark
-/// (`<w:pPr><w:rPr>`) are intentionally ignored.
+/// Scope: paragraphs (`<w:p>`), tables (`<w:tbl>`/`<w:tr>`/`<w:tc>`), runs
+/// (`<w:r>`), text (`<w:t>`), tabs (`<w:tab>`), page breaks (`<w:br type=page>`),
+/// hyperlinks (`<w:hyperlink r:id>`), the character toggles inside a run's
+/// `<w:rPr>` (bold/italic/underline, fonts, size, color, highlight, vertAlign),
+/// and paragraph properties (`<w:jc>`, `<w:spacing>`, `<w:ind>`, `<w:numPr>`).
+/// Section properties (`<w:sectPr>`) are read for page size and margins.
 final class WordprocessingMLParser: NSObject, XMLParserDelegate {
-    private var paragraphs: [WriteParagraph] = []
+    private var blocks: [WriteBlock] = []
     private var currentRuns: [WriteRun] = []
     private var section = WriteDocumentSection()
+
+    /// Resolves a hyperlink relationship id (`r:id`) to its external target URL.
+    private let hyperlinkResolver: (String) -> String?
+    /// Resolves an image relationship id (`r:embed`) to its bytes and extension.
+    private let imageResolver: (String) -> (data: Data, fileExtension: String)?
+
+    // Table assembly state (single level of nesting).
+    private var inTable = false
+    private var inCell = false
+    private var tableRows: [WriteTableRow] = []
+    private var currentRowCells: [WriteTableCell] = []
+    private var currentCellParagraphs: [WriteParagraph] = []
+
+    // Hyperlink state.
+    private var currentLinkURL: String?
 
     private var inRun = false
     private var inParagraphProperties = false
@@ -27,6 +45,16 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
     private var runHighlightColorHex: String?
     private var runVerticalAlignment: WriteVerticalAlignment = .baseline
     private var runIsPageBreak = false
+    private var runImage: WriteImage?
+    private var runShape: WriteShape?
+
+    // Drawing (`<w:drawing>`) assembly state.
+    private var inDrawing = false
+    private var drawingCx: Double?
+    private var drawingCy: Double?
+    private var drawingBlipRelId: String?
+    private var drawingPreset: String?
+    private var drawingFillHex: String?
 
     private var paragraphAlignment: WriteParagraphAlignment = .left
     private var paragraphLineSpacing: Double?
@@ -38,13 +66,29 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
     private var paragraphNumberingId: Int?
     private var paragraphPageBreakBefore = false
 
-    func parse(data: Data) throws -> (paragraphs: [WriteParagraph], section: WriteDocumentSection) {
+    init(
+        hyperlinkResolver: @escaping (String) -> String? = { _ in nil },
+        imageResolver: @escaping (String) -> (data: Data, fileExtension: String)? = { _ in nil }
+    ) {
+        self.hyperlinkResolver = hyperlinkResolver
+        self.imageResolver = imageResolver
+    }
+
+    func parse(data: Data) throws -> (blocks: [WriteBlock], section: WriteDocumentSection) {
         let parser = XMLParser(data: data)
         parser.delegate = self
         guard parser.parse() else {
             throw SenovativeDocumentError.fileCorrupted("XML parsing failed")
         }
-        return (paragraphs, section)
+        return (blocks, section)
+    }
+
+    /// Convenience for parts that only carry paragraphs (headers/footers).
+    func parseParagraphs(data: Data) throws -> [WriteParagraph] {
+        try parse(data: data).blocks.compactMap { block in
+            if case let .paragraph(paragraph) = block { return paragraph }
+            return nil
+        }
     }
 
     func parser(
@@ -55,6 +99,20 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
         attributes attributeDict: [String: String] = [:]
     ) {
         switch local(elementName) {
+        case "tbl":
+            inTable = true
+            tableRows = []
+        case "tr":
+            if inTable { currentRowCells = [] }
+        case "tc":
+            if inTable {
+                inCell = true
+                currentCellParagraphs = []
+            }
+        case "hyperlink":
+            if let relId = attributeDict["r:id"] {
+                currentLinkURL = hyperlinkResolver(relId)
+            }
         case "p":
             currentRuns = []
             paragraphAlignment = .left
@@ -108,6 +166,32 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             runHighlightColorHex = nil
             runVerticalAlignment = .baseline
             runIsPageBreak = false
+            runImage = nil
+            runShape = nil
+        case "drawing":
+            if inRun {
+                inDrawing = true
+                drawingCx = nil
+                drawingCy = nil
+                drawingBlipRelId = nil
+                drawingPreset = nil
+                drawingFillHex = nil
+            }
+        case "extent":
+            if inDrawing {
+                drawingCx = points(fromEmu: attributeDict["cx"])
+                drawingCy = points(fromEmu: attributeDict["cy"])
+            }
+        case "blip":
+            if inDrawing, let embed = attributeDict["r:embed"] ?? attributeDict["embed"] {
+                drawingBlipRelId = embed
+            }
+        case "prstGeom":
+            if inDrawing { drawingPreset = attributeDict["prst"] }
+        case "srgbClr":
+            if inDrawing, drawingFillHex == nil {
+                drawingFillHex = normalizedHex(attributeDict["val"])
+            }
         case "rPr":
             if inRun { inRunProperties = true }
         case "b":
@@ -138,6 +222,8 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             if inRun && inRunProperties {
                 runVerticalAlignment = verticalAlignment(from: attribute(attributeDict, "val"))
             }
+        case "tab":
+            if inRun { runText += "\t" }
         case "br":
             if inRun, attribute(attributeDict, "type") == "page" {
                 runIsPageBreak = true
@@ -180,8 +266,31 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
             inParagraphProperties = false
         case "rPr":
             inRunProperties = false
+        case "hyperlink":
+            currentLinkURL = nil
+        case "drawing":
+            if inDrawing {
+                let width = drawingCx ?? 0
+                let height = drawingCy ?? 0
+                if let relId = drawingBlipRelId, let resolved = imageResolver(relId) {
+                    runImage = WriteImage(
+                        data: resolved.data,
+                        fileExtension: resolved.fileExtension,
+                        width: width,
+                        height: height
+                    )
+                } else if let preset = drawingPreset {
+                    runShape = WriteShape(
+                        kind: preset == "ellipse" ? .oval : .rectangle,
+                        width: width,
+                        height: height,
+                        fillColorHex: drawingFillHex
+                    )
+                }
+                inDrawing = false
+            }
         case "r":
-            if inRun, !runText.isEmpty || runIsPageBreak {
+            if inRun, !runText.isEmpty || runIsPageBreak || runImage != nil || runShape != nil {
                 currentRuns.append(
                     WriteRun(
                         text: runText,
@@ -193,26 +302,48 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
                         textColorHex: runTextColorHex,
                         highlightColorHex: runHighlightColorHex,
                         verticalAlignment: runVerticalAlignment,
-                        isPageBreak: runIsPageBreak
+                        isPageBreak: runIsPageBreak,
+                        linkURL: currentLinkURL,
+                        image: runImage,
+                        shape: runShape
                     )
                 )
             }
             inRun = false
         case "p":
-            paragraphs.append(
-                WriteParagraph(
-                    runs: currentRuns,
-                    alignment: paragraphAlignment,
-                    lineSpacing: paragraphLineSpacing,
-                    spacingBefore: paragraphSpacingBefore,
-                    spacingAfter: paragraphSpacingAfter,
-                    leftIndent: paragraphLeftIndent,
-                    firstLineIndent: paragraphFirstLineIndent,
-                    list: listStyle(numberingId: paragraphNumberingId, level: paragraphListLevel),
-                    pageBreakBefore: paragraphPageBreakBefore
-                )
+            let paragraph = WriteParagraph(
+                runs: currentRuns,
+                alignment: paragraphAlignment,
+                lineSpacing: paragraphLineSpacing,
+                spacingBefore: paragraphSpacingBefore,
+                spacingAfter: paragraphSpacingAfter,
+                leftIndent: paragraphLeftIndent,
+                firstLineIndent: paragraphFirstLineIndent,
+                list: listStyle(numberingId: paragraphNumberingId, level: paragraphListLevel),
+                pageBreakBefore: paragraphPageBreakBefore
             )
+            if inCell {
+                currentCellParagraphs.append(paragraph)
+            } else {
+                blocks.append(.paragraph(paragraph))
+            }
             currentRuns = []
+        case "tc":
+            if inTable {
+                currentRowCells.append(WriteTableCell(paragraphs: currentCellParagraphs))
+                currentCellParagraphs = []
+                inCell = false
+            }
+        case "tr":
+            if inTable {
+                currentRowCells.removeAll { $0.paragraphs.isEmpty }
+                tableRows.append(WriteTableRow(cells: currentRowCells))
+                currentRowCells = []
+            }
+        case "tbl":
+            blocks.append(.table(WriteTable(rows: tableRows)))
+            tableRows = []
+            inTable = false
         default:
             break
         }
@@ -257,6 +388,12 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
         return value / 20.0
     }
 
+    /// English Metric Units -> points (914400 EMU = 1 inch = 72 pt).
+    private func points(fromEmu value: String?) -> Double? {
+        guard let value = doubleValue(value) else { return nil }
+        return value / 12700.0
+    }
+
     private func normalizedHex(_ value: String?) -> String? {
         guard let value, value != "auto" else { return nil }
         return value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -293,8 +430,60 @@ final class WordprocessingMLParser: NSObject, XMLParserDelegate {
     }
 }
 
+/// Parses `word/_rels/document.xml.rels` into an id -> target map.
+final class RelationshipParser: NSObject, XMLParserDelegate {
+    private var relationships: [String: String] = [:]
+
+    func parse(data: Data) -> [String: String] {
+        let parser = XMLParser(data: data)
+        parser.delegate = self
+        parser.parse()
+        return relationships
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        guard elementName.hasSuffix("Relationship") || elementName == "Relationship" else { return }
+        if let id = attributeDict["Id"], let target = attributeDict["Target"] {
+            relationships[id] = target
+        }
+    }
+}
+
+/// A picture part to be written into the archive, with its relationship id.
+struct ImageRelation {
+    let image: WriteImage
+    let relId: String
+    let partName: String
+}
+
+/// Accumulates pictures encountered while serializing and hands out unique
+/// `<wp:docPr>` ids for every drawing (picture or shape).
+final class DrawingContext {
+    var images: [ImageRelation] = []
+    private var nextDrawingId = 1
+
+    func makeDrawingId() -> Int {
+        defer { nextDrawingId += 1 }
+        return nextDrawingId
+    }
+}
+
 enum WordprocessingMLWriter {
-    static func contentTypes(includeNumbering: Bool, hasHeader: Bool, hasFooter: Bool) -> Data {
+    static func contentTypes(
+        includeNumbering: Bool,
+        hasHeader: Bool,
+        hasFooter: Bool,
+        imageExtensions: Set<String> = []
+    ) -> Data {
+        let imageDefaults = imageExtensions.sorted().map { ext in
+            "\n    <Default Extension=\"\(ext)\" ContentType=\"\(imageContentType(for: ext))\"/>"
+        }.joined()
         let numberingOverride = includeNumbering
             ? "\n    <Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/>"
             : ""
@@ -308,7 +497,7 @@ enum WordprocessingMLWriter {
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
             <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-            <Default Extension="xml" ContentType="application/xml"/>
+            <Default Extension="xml" ContentType="application/xml"/>\(imageDefaults)
             <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>\(numberingOverride)\(headerOverride)\(footerOverride)
         </Types>
         """
@@ -325,8 +514,17 @@ enum WordprocessingMLWriter {
         return Data(xml.utf8)
     }
 
-    static func documentRels(includeNumbering: Bool, hasHeader: Bool, hasFooter: Bool) -> Data {
+    static func documentRels(
+        includeNumbering: Bool,
+        hasHeader: Bool,
+        hasFooter: Bool,
+        linkRelations: [(url: String, relId: String)] = [],
+        imageRelations: [ImageRelation] = []
+    ) -> Data {
         var relationships = ""
+        for relation in imageRelations {
+            relationships += "\n    <Relationship Id=\"\(relation.relId)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"\(relation.partName)\"/>"
+        }
         if includeNumbering {
             relationships += "\n    <Relationship Id=\"rIdNumbering\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/>"
         }
@@ -336,6 +534,9 @@ enum WordprocessingMLWriter {
         if hasFooter {
             relationships += "\n    <Relationship Id=\"rIdFooter1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer\" Target=\"footer1.xml\"/>"
         }
+        for relation in linkRelations {
+            relationships += "\n    <Relationship Id=\"\(relation.relId)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"\(escapeAttribute(relation.url))\" TargetMode=\"External\"/>"
+        }
         let xml = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\(relationships)
@@ -344,14 +545,22 @@ enum WordprocessingMLWriter {
         return Data(xml.utf8)
     }
 
-    static func document(paragraphs: [WriteParagraph], section: WriteDocumentSection) -> Data {
+    /// Serializes the document body and returns the XML plus the pictures that
+    /// must be written into the archive (with their relationship ids).
+    static func document(
+        blocks: [WriteBlock],
+        section: WriteDocumentSection,
+        linkRelations: [(url: String, relId: String)] = []
+    ) -> (xml: Data, images: [ImageRelation]) {
+        let links = Dictionary(linkRelations.map { ($0.url, $0.relId) }, uniquingKeysWith: { first, _ in first })
+        let context = DrawingContext()
         var xml = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
             <w:body>
         """
 
-        xml += writeParagraphs(paragraphs)
+        xml += writeBlocks(blocks, links: links, context: context)
         xml += sectionProperties(for: section)
 
         xml += """
@@ -359,7 +568,7 @@ enum WordprocessingMLWriter {
             </w:body>
         </w:document>
         """
-        return Data(xml.utf8)
+        return (Data(xml.utf8), context.images)
     }
 
     static func header(paragraphs: [WriteParagraph]) -> Data {
@@ -367,7 +576,7 @@ enum WordprocessingMLWriter {
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
         """
-        xml += writeParagraphs(paragraphs)
+        xml += writeParagraphs(paragraphs, context: DrawingContext())
         xml += "\n</w:hdr>"
         return Data(xml.utf8)
     }
@@ -377,30 +586,176 @@ enum WordprocessingMLWriter {
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
         """
-        xml += writeParagraphs(paragraphs)
+        xml += writeParagraphs(paragraphs, context: DrawingContext())
         xml += "\n</w:ftr>"
         return Data(xml.utf8)
     }
 
-    private static func writeParagraphs(_ paragraphs: [WriteParagraph]) -> String {
+    private static func writeBlocks(_ blocks: [WriteBlock], links: [String: String], context: DrawingContext) -> String {
         var xml = ""
-        for paragraph in paragraphs {
-            xml += "\n        <w:p>"
-            xml += paragraphProperties(for: paragraph)
-            for run in paragraph.runs {
-                xml += "\n            <w:r>"
-                xml += runProperties(for: run)
-                if run.isPageBreak {
-                    xml += "\n                <w:br w:type=\"page\"/>"
-                }
-                if !run.text.isEmpty {
-                    xml += "\n                <w:t xml:space=\"preserve\">\(escape(run.text))</w:t>"
-                }
-                xml += "\n            </w:r>"
+        for block in blocks {
+            switch block {
+            case let .paragraph(paragraph):
+                xml += writeParagraph(paragraph, links: links, context: context)
+            case let .table(table):
+                xml += writeTable(table, links: links, context: context)
             }
-            xml += "\n        </w:p>"
         }
         return xml
+    }
+
+    private static func writeParagraphs(_ paragraphs: [WriteParagraph], links: [String: String] = [:], context: DrawingContext) -> String {
+        paragraphs.map { writeParagraph($0, links: links, context: context) }.joined()
+    }
+
+    private static func writeParagraph(_ paragraph: WriteParagraph, links: [String: String], context: DrawingContext) -> String {
+        var xml = "\n        <w:p>"
+        xml += paragraphProperties(for: paragraph)
+        for run in paragraph.runs {
+            let runXML = "\n            <w:r>\(runInner(run, context: context))\n            </w:r>"
+            if let url = run.linkURL, let relId = links[url] {
+                xml += "\n            <w:hyperlink r:id=\"\(relId)\">\(runXML)\n            </w:hyperlink>"
+            } else {
+                xml += runXML
+            }
+        }
+        xml += "\n        </w:p>"
+        return xml
+    }
+
+    private static func writeTable(_ table: WriteTable, links: [String: String], context: DrawingContext) -> String {
+        let columns = max(1, table.columnCount)
+        let usableWidth = 9360 // ~6.5in in twips
+        let colWidth = usableWidth / columns
+
+        var grid = ""
+        for _ in 0..<columns {
+            grid += "\n                <w:gridCol w:w=\"\(colWidth)\"/>"
+        }
+
+        var xml = """
+
+                <w:tbl>
+                    <w:tblPr>
+                        <w:tblW w:w="0" w:type="auto"/>
+                        <w:tblBorders>
+                            <w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+                            <w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+                            <w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+                            <w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+                            <w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+                            <w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+                        </w:tblBorders>
+                    </w:tblPr>
+                    <w:tblGrid>\(grid)
+                    </w:tblGrid>
+        """
+
+        for row in table.rows {
+            xml += "\n                <w:tr>"
+            for cell in row.cells {
+                xml += "\n                    <w:tc>"
+                xml += "\n                        <w:tcPr><w:tcW w:w=\"\(colWidth)\" w:type=\"dxa\"/></w:tcPr>"
+                xml += writeParagraphs(cell.paragraphs, links: links, context: context)
+                xml += "\n                    </w:tc>"
+            }
+            xml += "\n                </w:tr>"
+        }
+
+        xml += "\n                </w:tbl>"
+        return xml
+    }
+
+    /// Inner content of a `<w:r>`: run properties, drawings, page break, and text split on tabs.
+    private static func runInner(_ run: WriteRun, context: DrawingContext) -> String {
+        var inner = runProperties(for: run)
+
+        if let image = run.image {
+            let id = context.makeDrawingId()
+            let ext = normalizedExtension(image.fileExtension)
+            let index = context.images.count + 1
+            let relId = "rIdImg\(index)"
+            let partName = "media/image\(index).\(ext)"
+            context.images.append(ImageRelation(image: image, relId: relId, partName: partName))
+            inner += imageDrawing(image, relId: relId, docPrId: id)
+            return inner
+        }
+
+        if let shape = run.shape {
+            let id = context.makeDrawingId()
+            inner += shapeDrawing(shape, docPrId: id)
+            return inner
+        }
+
+        if run.isPageBreak {
+            inner += "\n                <w:br w:type=\"page\"/>"
+        }
+        let segments = run.text.components(separatedBy: "\t")
+        for (index, segment) in segments.enumerated() {
+            if index > 0 {
+                inner += "\n                <w:tab/>"
+            }
+            if !segment.isEmpty {
+                inner += "\n                <w:t xml:space=\"preserve\">\(escape(segment))</w:t>"
+            }
+        }
+        return inner
+    }
+
+    private static func imageDrawing(_ image: WriteImage, relId: String, docPrId: Int) -> String {
+        let cx = emu(image.width)
+        let cy = emu(image.height)
+        return """
+
+                <w:drawing>
+                    <wp:inline distT="0" distB="0" distL="0" distR="0">
+                        <wp:extent cx="\(cx)" cy="\(cy)"/>
+                        <wp:docPr id="\(docPrId)" name="Picture \(docPrId)"/>
+                        <a:graphic>
+                            <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                                <pic:pic>
+                                    <pic:nvPicPr><pic:cNvPr id="\(docPrId)" name="image\(docPrId)"/><pic:cNvPicPr/></pic:nvPicPr>
+                                    <pic:blipFill><a:blip r:embed="\(relId)"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+                                    <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="\(cx)" cy="\(cy)"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>
+                                </pic:pic>
+                            </a:graphicData>
+                        </a:graphic>
+                    </wp:inline>
+                </w:drawing>
+        """
+    }
+
+    private static func shapeDrawing(_ shape: WriteShape, docPrId: Int) -> String {
+        let cx = emu(shape.width)
+        let cy = emu(shape.height)
+        let preset = shape.kind == .oval ? "ellipse" : "rect"
+        let fill: String
+        if let hex = sanitizedHex(shape.fillColorHex) {
+            fill = "<a:solidFill><a:srgbClr val=\"\(hex)\"/></a:solidFill>"
+        } else {
+            fill = ""
+        }
+        return """
+
+                <w:drawing>
+                    <wp:inline distT="0" distB="0" distL="0" distR="0">
+                        <wp:extent cx="\(cx)" cy="\(cy)"/>
+                        <wp:docPr id="\(docPrId)" name="Shape \(docPrId)"/>
+                        <a:graphic>
+                            <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                                <wps:wsp>
+                                    <wps:spPr>
+                                        <a:xfrm><a:off x="0" y="0"/><a:ext cx="\(cx)" cy="\(cy)"/></a:xfrm>
+                                        <a:prstGeom prst="\(preset)"><a:avLst/></a:prstGeom>
+                                        \(fill)
+                                    </wps:spPr>
+                                    <wps:bodyPr/>
+                                </wps:wsp>
+                            </a:graphicData>
+                        </a:graphic>
+                    </wp:inline>
+                </w:drawing>
+        """
     }
 
     static func numbering() -> Data {
@@ -430,8 +785,47 @@ enum WordprocessingMLWriter {
         return Data(xml.utf8)
     }
 
-    static func needsNumbering(_ paragraphs: [WriteParagraph]) -> Bool {
-        paragraphs.contains { $0.list != nil }
+    static func needsNumbering(_ blocks: [WriteBlock]) -> Bool {
+        blocks.contains { block in
+            switch block {
+            case let .paragraph(paragraph):
+                return paragraph.list != nil
+            case let .table(table):
+                return table.rows.contains { row in
+                    row.cells.contains { cell in
+                        cell.paragraphs.contains { $0.list != nil }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Collects the distinct external hyperlink targets in document order and
+    /// assigns each a relationship id.
+    static func hyperlinkRelations(in blocks: [WriteBlock]) -> [(url: String, relId: String)] {
+        var urls: [String] = []
+        func collect(_ paragraphs: [WriteParagraph]) {
+            for paragraph in paragraphs {
+                for run in paragraph.runs {
+                    if let url = run.linkURL, !urls.contains(url) {
+                        urls.append(url)
+                    }
+                }
+            }
+        }
+        for block in blocks {
+            switch block {
+            case let .paragraph(paragraph):
+                collect([paragraph])
+            case let .table(table):
+                for row in table.rows {
+                    for cell in row.cells {
+                        collect(cell.paragraphs)
+                    }
+                }
+            }
+        }
+        return urls.enumerated().map { (url: $1, relId: "rIdLink\($0 + 1)") }
     }
 
     private static func paragraphProperties(for paragraph: WriteParagraph) -> String {
@@ -463,7 +857,7 @@ enum WordprocessingMLWriter {
             spacingAttributes.append("w:after=\"\(twips(spacingAfter))\"")
         }
         if !spacingAttributes.isEmpty {
-            parts.append("<w:spacing \(spacingAttributes.joined(separator: " "))/>\n")
+            parts.append("<w:spacing \(spacingAttributes.joined(separator: " "))/>")
         }
 
         var indentAttributes: [String] = []
@@ -478,7 +872,7 @@ enum WordprocessingMLWriter {
             }
         }
         if !indentAttributes.isEmpty {
-            parts.append("<w:ind \(indentAttributes.joined(separator: " "))/>\n")
+            parts.append("<w:ind \(indentAttributes.joined(separator: " "))/>")
         }
 
         if let list = paragraph.list {
@@ -496,12 +890,12 @@ enum WordprocessingMLWriter {
         let left = twips(section.margins.left)
         let bottom = twips(section.margins.bottom)
         let right = twips(section.margins.right)
-        
+
         let headerRef = !section.header.isEmpty ? "\n                    <w:headerReference w:type=\"default\" r:id=\"rIdHeader1\"/>" : ""
         let footerRef = !section.footer.isEmpty ? "\n                    <w:footerReference w:type=\"default\" r:id=\"rIdFooter1\"/>" : ""
-        
+
         return """
-        
+
                 <w:sectPr>\(headerRef)\(footerRef)
                     <w:pgSz w:w="\(w)" w:h="\(h)"/>
                     <w:pgMar w:top="\(top)" w:right="\(right)" w:bottom="\(bottom)" w:left="\(left)" w:header="720" w:footer="720" w:gutter="0"/>
@@ -566,6 +960,27 @@ enum WordprocessingMLWriter {
 
     private static func twips(_ points: Double) -> Int {
         Int((points * 20.0).rounded())
+    }
+
+    /// points -> English Metric Units (72 pt = 914400 EMU).
+    private static func emu(_ points: Double) -> Int {
+        Int((points * 12700.0).rounded())
+    }
+
+    static func normalizedExtension(_ ext: String) -> String {
+        let lower = ext.lowercased()
+        return lower == "jpg" ? "jpeg" : lower
+    }
+
+    private static func imageContentType(for ext: String) -> String {
+        switch ext.lowercased() {
+        case "png": "image/png"
+        case "jpg", "jpeg": "image/jpeg"
+        case "gif": "image/gif"
+        case "bmp": "image/bmp"
+        case "tif", "tiff": "image/tiff"
+        default: "application/octet-stream"
+        }
     }
 
     private static func sanitizedHex(_ value: String?) -> String? {
